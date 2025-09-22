@@ -1,5 +1,10 @@
 import express from 'express';
 import cors from 'cors';
+import dotenv from 'dotenv';
+import authRoutes from './routes/auth';
+
+// Load environment variables
+dotenv.config();
 
 const app = express();
 
@@ -23,5 +28,8 @@ app.get('/health', (req, res) => {
     timestamp: new Date().toISOString()
   });
 });
+
+// API Routes
+app.use('/api/auth', authRoutes);
 
 export default app;
