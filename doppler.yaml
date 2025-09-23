@@ -1,0 +1,54 @@
+# Doppler configuration for Billiards Backend
+# This file tells Doppler how to manage your secrets
+
+# Project configuration
+project: billiards-backend
+config: dev  # dev, staging, prod
+
+# Secret management
+secrets:
+  # Database secrets
+  - name: DB_HOST
+    value: localhost
+    description: "Database host"
+  
+  - name: DB_PORT
+    value: "5432"
+    description: "Database port"
+  
+  - name: DB_NAME
+    value: billiards_platform
+    description: "Database name"
+  
+  - name: DB_USER
+    value: postgres
+    description: "Database username"
+  
+  - name: DB_PASSWORD
+    value: password123
+    description: "Database password"
+    type: password
+  
+  - name: DATABASE_URL
+    value: postgresql://postgres:password123@localhost:5432/billiards_platform
+    description: "Full database connection string"
+  
+  # JWT secrets
+  - name: JWT_SECRET
+    value: "your-super-secret-jwt-key-change-this-in-production"
+    description: "JWT signing secret"
+    type: password
+  
+  # Redis secrets
+  - name: REDIS_URL
+    value: redis://localhost:6379
+    description: "Redis connection string"
+  
+  # Application secrets
+  - name: NODE_ENV
+    value: development
+    description: "Application environment"
+  
+  - name: PORT
+    value: "3001"
+    description: "Application port"

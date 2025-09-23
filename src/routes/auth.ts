@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import pool from '../config/database';
+import { secrets } from '../config/secrets';
 
 const router = express.Router();
 
@@ -159,7 +160,7 @@ router.post('/login', async (req, res) => {
         accountType: user.account_type || 'player',
         sessionId: session.sessionId
       },
-      process.env.JWT_SECRET || 'fallback-secret',
+      secrets.JWT_SECRET,
       { expiresIn: '15m' } // Short-lived access token
     );
 
@@ -268,7 +269,7 @@ router.post('/refresh', async (req, res) => {
         accountType: session.account_type || 'player',
         sessionId: session.id
       },
-      process.env.JWT_SECRET || 'fallback-secret',
+      secrets.JWT_SECRET,
       { expiresIn: '15m' }
     );
 
@@ -549,7 +550,7 @@ router.post('/register', async (req, res) => {
           email: user.email,
           accountType: 'player'
         },
-        process.env.JWT_SECRET || 'fallback-secret',
+        secrets.JWT_SECRET,
         { expiresIn: '24h' }
       );
 
@@ -928,7 +929,7 @@ router.post('/change-password', async (req, res) => {
         accountType: decoded.accountType || 'player',
         sessionId: newSession.sessionId
       },
-      process.env.JWT_SECRET || 'fallback-secret',
+      secrets.JWT_SECRET,
       { expiresIn: '15m' }
     );
 
@@ -971,7 +972,7 @@ router.get('/profile', async (req, res) => {
       });
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key') as any;
+    const decoded = jwt.verify(token, secrets.JWT_SECRET) as any;
     
     const userQuery = `
       SELECT u.*, up.first_name, up.last_name, up.skill_level, up.bio, up.avatar_url, up.date_of_birth
