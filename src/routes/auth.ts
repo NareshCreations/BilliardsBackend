@@ -977,7 +977,7 @@ router.get('/profile', async (req, res) => {
     const userQuery = `
       SELECT u.*, up.first_name, up.last_name, up.skill_level, up.bio, up.avatar_url, up.date_of_birth
       FROM users u
-      LEFT JOIN user_profiles up ON u.id = up.user_id
+      LEFT JOIN user_preferences up ON u.id = up.user_id
       WHERE u.id = $1 AND u.is_active = true
     `;
     
