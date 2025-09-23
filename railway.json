@@ -7,6 +7,7 @@
   "deploy": {
     "numReplicas": 1,
     "restartPolicyType": "on_failure",
-    "sleepApplication": false
+    "sleepApplication": false,
+    "startCommand": "npm run migrate && npm start"
   }
 }
