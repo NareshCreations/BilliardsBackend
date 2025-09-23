@@ -4,7 +4,7 @@
   "description": "Simple Hello World Node.js app for Railway testing",
   "main": "dist/server.js",
   "scripts": {
-    "start": "node dist/server.js",
+    "start": "npm run migrate && node dist/server.js",
     "dev": "nodemon src/server.ts",
     "build": "tsc",
     "test": "echo \"No tests specified\"",
