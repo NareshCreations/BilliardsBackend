@@ -25,8 +25,15 @@ async function runMigration() {
     }
     
     // Read the init.sql file
-    const initSqlPath = path.join(__dirname, '../database/init.sql');
+    const initSqlPath = path.join(process.cwd(), 'database/init.sql');
+    console.log('📁 Looking for SQL file at:', initSqlPath);
+    
+    if (!fs.existsSync(initSqlPath)) {
+      throw new Error(`SQL file not found at: ${initSqlPath}`);
+    }
+    
     const initSql = fs.readFileSync(initSqlPath, 'utf8');
+    console.log('📄 SQL file loaded successfully');
     
     // Execute the SQL
     await pool.query(initSql);
