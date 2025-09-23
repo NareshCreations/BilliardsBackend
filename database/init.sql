@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS users (
 -- User preferences and extended profile
 CREATE TABLE IF NOT EXISTS user_preferences (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    user_id UUID UNIQUE REFERENCES users(id) ON DELETE CASCADE,
     skill_level VARCHAR(20) DEFAULT 'beginner',
     bio TEXT,
     preferred_game_types JSONB,
