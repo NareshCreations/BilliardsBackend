@@ -11,6 +11,19 @@ async function runMigration() {
   try {
     console.log('🔄 Starting database migration...');
     
+    // Check if tables already exist
+    const existingTables = await pool.query(`
+      SELECT table_name 
+      FROM information_schema.tables 
+      WHERE table_schema = 'public'
+    `);
+    
+    if (existingTables.rows.length > 0) {
+      console.log('✅ Tables already exist, skipping migration');
+      console.log('📋 Existing tables:', existingTables.rows.map(row => row.table_name));
+      return;
+    }
+    
     // Read the init.sql file
     const initSqlPath = path.join(__dirname, '../database/init.sql');
     const initSql = fs.readFileSync(initSqlPath, 'utf8');
