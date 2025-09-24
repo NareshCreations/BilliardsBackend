@@ -4,6 +4,9 @@ FROM node:18-alpine
 # Set working directory
 WORKDIR /app
 
+# Install Doppler CLI
+RUN curl -Ls https://cli.doppler.com/install.sh | sh
+
 # Copy package files
 COPY package*.json ./
 
@@ -22,5 +25,5 @@ RUN npm prune --production
 # Expose port
 EXPOSE 3000
 
-# Start the application with migration
-CMD ["sh", "-c", "npm run migrate && npm start"]
+# Start the application with Doppler
+CMD ["sh", "-c", "doppler run -- npm run migrate && doppler run -- npm start"]
