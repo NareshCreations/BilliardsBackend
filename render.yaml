@@ -4,8 +4,10 @@ services:
     env: node
     plan: free
     buildCommand: npm install && npm run build
-    startCommand: npm run migrate && npm start
+    startCommand: doppler run -- npm run migrate && doppler run -- npm start
     envVars:
+      - key: DOPPLER_TOKEN
+        value: ${DOPPLER_TOKEN}
       - key: NODE_ENV
         value: production
       - key: PORT
@@ -14,8 +16,6 @@ services:
         fromDatabase:
           name: billiards-db
           property: connectionString
-      - key: JWT_SECRET
-        generateValue: true
       - key: DB_HOST
         fromDatabase:
           name: billiards-db
