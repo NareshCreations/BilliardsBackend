@@ -1,0 +1,32 @@
+services:
+  - type: web
+    name: billiards-backend
+    env: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3001
+      - key: DATABASE_URL
+        fromDatabase:
+          name: billiards-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: REDIS_URL
+        fromDatabase:
+          name: redis-db
+          property: connectionString
+
+databases:
+  - name: billiards-db
+    plan: free
+    databaseName: billiards_platform
+    user: billiards_user
+  
+  - name: redis-db
+    plan: free
+    engine: REDIS

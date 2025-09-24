@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: billiards-config
+  namespace: billiards-backend
+data:
+  NODE_ENV: "production"
+  PORT: "3001"
+  DB_HOST: "postgres-service"
+  DB_PORT: "5432"
+  DB_NAME: "billiards_platform"
+  DB_USER: "billiards_user"
+  REDIS_URL: "redis://redis-service:6379"

@@ -4,12 +4,24 @@ import fs from 'fs';
 import path from 'path';
 
 async function runMigration() {
+  // Wait for database to be ready
+  console.log('⏳ Waiting for database connection...');
+  await new Promise(resolve => setTimeout(resolve, 5000));
+
   const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
+    max: 1,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 2000,
   });
 
   try {
     console.log('🔄 Starting database migration...');
+    console.log('🔗 Database URL:', process.env.DATABASE_URL ? 'Set' : 'Not set');
+    
+    // Test connection first
+    await pool.query('SELECT 1');
+    console.log('✅ Database connection successful');
     
     // Check if tables already exist
     const existingTables = await pool.query(`
