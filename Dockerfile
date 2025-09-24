@@ -22,5 +22,5 @@ RUN npm prune --production
 # Expose port
 EXPOSE 3000
 
-# Start the application
-CMD ["npm", "start"]
+# Start the application with migration
+CMD ["sh", "-c", "npm run migrate && npm start"]
