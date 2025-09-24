@@ -6,6 +6,9 @@ WORKDIR /app
 
 # Install Doppler CLI
 RUN curl -Ls https://cli.doppler.com/install.sh | sh
+ENV PATH="/root/.local/bin:$PATH"
+# Verify Doppler installation
+RUN doppler --version
 
 # Copy package files
 COPY package*.json ./
