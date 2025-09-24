@@ -1,9 +1,14 @@
-// src/controllers/AuthController.ts
 import { Request, Response } from 'express';
 import { AuthService } from '../services/AuthService';
+import { LoginDto, RegisterDto, RefreshTokenDto, ForgotPasswordDto, ResetPasswordDto, ChangePasswordDto } from '../dto/auth';
 
 interface AuthenticatedRequest extends Request {
-  user?: any;
+  user?: {
+    userId: string;
+    email: string;
+    accountType: string;
+    sessionId: string;
+  };
 }
 
 export class AuthController {
@@ -29,12 +34,10 @@ export class AuthController {
 
   async login(req: Request, res: Response): Promise<void> {
     try {
-      const { email, password } = req.body;
+      const loginData: LoginDto = req.body;
       const clientInfo = this.getClientInfo(req);
 
-      // Validation
-      if (!email || !password) {
-        await this.authService.logLoginAttempt(email || 'unknown', false, clientInfo, 'missing_credentials');
+      if (!loginData.email || !loginData.password) {
         res.status(400).json({
           success: false,
           message: 'Email and password are required'
@@ -42,76 +45,36 @@ export class AuthController {
         return;
       }
 
-      // Check brute force protection
-      const isRateLimited = await this.authService.checkBruteForceProtection(email);
-      if (isRateLimited) {
-        await this.authService.logLoginAttempt(email, false, clientInfo, 'rate_limited');
-        res.status(429).json({
-          success: false,
-          message: 'Too many failed attempts. Please try again in 15 minutes.'
-        });
-        return;
-      }
-
-      // Find user
-      const user = await this.authService.findUserByEmail(email);
-      if (!user) {
-        await this.authService.logLoginAttempt(email, false, clientInfo, 'user_not_found');
-        res.status(401).json({
-          success: false,
-          message: 'Invalid email or password'
-        });
-        return;
-      }
-
-      // Verify password
-      const isValidPassword = await this.authService.verifyPassword(password, user.passwordHash);
-      if (!isValidPassword) {
-        await this.authService.logLoginAttempt(email, false, clientInfo, 'invalid_password');
-        res.status(401).json({
-          success: false,
-          message: 'Invalid email or password'
-        });
-        return;
-      }
-
-      // Create session
-      const session = await this.authService.createUserSession(user.id, clientInfo);
-      const accessToken = this.authService.generateAccessToken(user, session.sessionId);
-
-      // Update user login info
-      await this.authService.updateUserLastLogin(user.id, clientInfo.ip);
-      await this.authService.logLoginAttempt(email, true, clientInfo);
-
-      // Remove sensitive data
-      const { passwordHash, passwordResetToken, emailVerificationToken, ...safeUser } = user;
+      const result = await this.authService.login(loginData, clientInfo);
 
       res.json({
         success: true,
         message: 'Login successful',
-        data: {
-          accessToken,
-          refreshToken: session.refreshToken,
-          expiresAt: session.expiresAt,
-          user: safeUser
-        }
+        data: result
       });
-
     } catch (error) {
       console.error('Login error:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Internal server error'
-      });
+      if (error instanceof Error && error.message.includes('No metadata')) {
+        res.status(503).json({
+          success: false,
+          message: 'Database connection not available. Please start the database.',
+          error: 'DATABASE_CONNECTION_FAILED'
+        });
+      } else {
+        res.status(401).json({
+          success: false,
+          message: error instanceof Error ? error.message : 'Unknown error'
+        });
+      }
     }
   }
 
   async register(req: Request, res: Response): Promise<void> {
     try {
-      const { email, password, firstName, lastName, phone, dateOfBirth } = req.body;
+      const registerData: RegisterDto = req.body;
 
       // Validation
-      if (!email || !password || !firstName || !lastName) {
+      if (!registerData.email || !registerData.password || !registerData.firstName || !registerData.lastName) {
         res.status(400).json({
           success: false,
           message: 'Email, password, first name, and last name are required'
@@ -120,7 +83,7 @@ export class AuthController {
       }
 
       const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-      if (!emailRegex.test(email)) {
+      if (!emailRegex.test(registerData.email)) {
         res.status(400).json({
           success: false,
           message: 'Please provide a valid email address'
@@ -128,7 +91,7 @@ export class AuthController {
         return;
       }
 
-      if (password.length < 8) {
+      if (registerData.password.length < 8) {
         res.status(400).json({
           success: false,
           message: 'Password must be at least 8 characters long'
@@ -136,41 +99,82 @@ export class AuthController {
         return;
       }
 
-      // Check if user exists
-      const existingUser = await this.authService.findUserByEmail(email);
-      if (existingUser) {
-        res.status(409).json({
-          success: false,
-          message: 'User with this email already exists'
-        });
-        return;
-      }
-
-      // Create user
-      const user = await this.authService.createUser({
-        email,
-        password,
-        firstName,
-        lastName,
-        phone,
-        dateOfBirth
-      });
-
-      const accessToken = this.authService.generateAccessToken(user, '');
-
-      const { passwordHash, ...safeUser } = user;
+      const result = await this.authService.register(registerData);
 
       res.status(201).json({
         success: true,
         message: 'User registered successfully',
-        data: {
-          accessToken,
-          user: safeUser
-        }
+        data: result
       });
-
     } catch (error) {
       console.error('Registration error:', error);
+      if (error instanceof Error && error.message.includes('already exists')) {
+        res.status(409).json({
+          success: false,
+          message: error.message
+        });
+      } else if (error instanceof Error && error.message.includes('No metadata')) {
+        res.status(503).json({
+          success: false,
+          message: 'Database connection not available. Please start the database.',
+          error: 'DATABASE_CONNECTION_FAILED'
+        });
+      } else {
+        res.status(500).json({
+          success: false,
+          message: error instanceof Error ? error.message : 'Internal server error'
+        });
+      }
+    }
+  }
+
+  async refreshToken(req: Request, res: Response): Promise<void> {
+    try {
+      const { refreshToken }: RefreshTokenDto = req.body;
+      const clientInfo = this.getClientInfo(req);
+
+      if (!refreshToken) {
+        res.status(400).json({
+          success: false,
+          message: 'Refresh token is required'
+        });
+        return;
+      }
+
+      const result = await this.authService.refreshToken(refreshToken, clientInfo);
+
+      res.json({
+        success: true,
+        message: 'Token refreshed successfully',
+        data: result
+      });
+    } catch (error) {
+      res.status(401).json({
+        success: false,
+        message: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+
+  async logout(req: Request, res: Response): Promise<void> {
+    try {
+      const { refreshToken }: RefreshTokenDto = req.body;
+
+      if (!refreshToken) {
+        res.status(400).json({
+          success: false,
+          message: 'Refresh token is required'
+        });
+        return;
+      }
+
+      await this.authService.logout(refreshToken);
+
+      res.json({
+        success: true,
+        message: 'Logged out successfully'
+      });
+    } catch (error) {
       res.status(500).json({
         success: false,
         message: 'Internal server error'
@@ -178,12 +182,100 @@ export class AuthController {
     }
   }
 
-  async getProfile(req: AuthenticatedRequest, res: Response): Promise<void> {
+  async logoutAll(req: Request, res: Response): Promise<void> {
     try {
-      // User should be attached by auth middleware
-      const user = req.user;
-      
-      if (!user) {
+      const { refreshToken }: RefreshTokenDto = req.body;
+
+      if (!refreshToken) {
+        res.status(400).json({
+          success: false,
+          message: 'Refresh token is required'
+        });
+        return;
+      }
+
+      await this.authService.logoutAllDevices(refreshToken);
+
+      res.json({
+        success: true,
+        message: 'Logged out from all devices successfully'
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        message: 'Internal server error'
+      });
+    }
+  }
+
+  async forgotPassword(req: Request, res: Response): Promise<void> {
+    try {
+      const { email }: ForgotPasswordDto = req.body;
+
+      if (!email) {
+        res.status(400).json({
+          success: false,
+          message: 'Email is required'
+        });
+        return;
+      }
+
+      const result = await this.authService.forgotPassword(email);
+
+      res.json({
+        success: true,
+        message: 'If an account with that email exists, a password reset link has been sent',
+        // Remove in production
+        debug: { resetToken: result.resetToken }
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        message: 'Internal server error'
+      });
+    }
+  }
+
+  async resetPassword(req: Request, res: Response): Promise<void> {
+    try {
+      const { token, newPassword }: ResetPasswordDto = req.body;
+
+      if (!token || !newPassword) {
+        res.status(400).json({
+          success: false,
+          message: 'Token and new password are required'
+        });
+        return;
+      }
+
+      if (newPassword.length < 8) {
+        res.status(400).json({
+          success: false,
+          message: 'Password must be at least 8 characters long'
+        });
+        return;
+      }
+
+      await this.authService.resetPassword(token, newPassword);
+
+      res.json({
+        success: true,
+        message: 'Password has been reset successfully'
+      });
+    } catch (error) {
+      res.status(400).json({
+        success: false,
+        message: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+
+  async changePassword(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const { currentPassword, newPassword }: ChangePasswordDto = req.body;
+      const clientInfo = this.getClientInfo(req);
+
+      if (!req.user) {
         res.status(401).json({
           success: false,
           message: 'User not authenticated'
@@ -191,27 +283,111 @@ export class AuthController {
         return;
       }
 
-      const fullUser = await this.authService.findUserById(user.userId);
-      
-      if (!fullUser) {
-        res.status(404).json({
+      if (!currentPassword || !newPassword) {
+        res.status(400).json({
           success: false,
-          message: 'User not found'
+          message: 'Current password and new password are required'
         });
         return;
       }
 
-      const { passwordHash, passwordResetToken, emailVerificationToken, ...safeUser } = fullUser;
+      if (newPassword.length < 8) {
+        res.status(400).json({
+          success: false,
+          message: 'New password must be at least 8 characters long'
+        });
+        return;
+      }
+
+      const result = await this.authService.changePassword(
+        req.user.userId,
+        currentPassword,
+        newPassword,
+        clientInfo
+      );
 
       res.json({
         success: true,
-        data: {
-          user: safeUser
-        }
+        message: 'Password changed successfully. All other sessions have been terminated.',
+        data: result
       });
-
     } catch (error) {
-      console.error('Profile error:', error);
+      res.status(400).json({
+        success: false,
+        message: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+
+  async verifyEmail(req: Request, res: Response): Promise<void> {
+    try {
+      const { token } = req.body;
+
+      if (!token) {
+        res.status(400).json({
+          success: false,
+          message: 'Verification token is required'
+        });
+        return;
+      }
+
+      await this.authService.verifyEmail(token);
+
+      res.json({
+        success: true,
+        message: 'Email verified successfully'
+      });
+    } catch (error) {
+      res.status(400).json({
+        success: false,
+        message: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+
+  async verifyPhone(req: Request, res: Response): Promise<void> {
+    try {
+      const { code, phone } = req.body;
+
+      if (!code || !phone) {
+        res.status(400).json({
+          success: false,
+          message: 'Verification code and phone number are required'
+        });
+        return;
+      }
+
+      await this.authService.verifyPhone(phone, code);
+
+      res.json({
+        success: true,
+        message: 'Phone number verified successfully'
+      });
+    } catch (error) {
+      res.status(400).json({
+        success: false,
+        message: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+
+  async getProfile(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      if (!req.user) {
+        res.status(401).json({
+          success: false,
+          message: 'User not authenticated'
+        });
+        return;
+      }
+
+      const user = await this.authService.getUserProfile(req.user.userId);
+
+      res.json({
+        success: true,
+        data: { user }
+      });
+    } catch (error) {
       res.status(500).json({
         success: false,
         message: 'Internal server error'
@@ -219,5 +395,38 @@ export class AuthController {
     }
   }
 
-  // Add other methods like logout, refresh, changePassword, etc.
+  async getSessions(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      if (!req.user) {
+        res.status(401).json({
+          success: false,
+          message: 'User not authenticated'
+        });
+        return;
+      }
+
+      const sessions = await this.authService.getUserSessions(req.user.userId);
+
+      res.json({
+        success: true,
+        data: {
+          sessions: sessions.map(session => ({
+            id: session.id,
+            deviceInfo: session.deviceInfo,
+            ipAddress: session.ipAddress,
+            userAgent: session.userAgent,
+            createdAt: session.createdAt,
+            lastUsedAt: session.lastUsedAt,
+            expiresAt: session.expiresAt,
+            isCurrent: session.id === req.user?.sessionId
+          }))
+        }
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        message: 'Internal server error'
+      });
+    }
+  }
 }

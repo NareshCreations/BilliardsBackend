@@ -1,0 +1,2962 @@
+﻿1. File: src\app.ts
+================================================================================
+import 'reflect-metadata';
+import express from 'express';
+import cors from 'cors';
+import dotenv from 'dotenv';
+import authRoutes from './routes/v1/auth.routes';
+import { secrets, logSecretStatus } from './config/secrets';
+import { initializeDatabase } from './config/orm';
+
+// Load environment variables
+dotenv.config();
+
+// Log secret status on startup
+try {
+  logSecretStatus();
+  console.log('âœ… Secrets loaded successfully');
+} catch (error) {
+  console.error('âŒ Secret loading failed:', error);
+  process.exit(1);
+}
+
+const app = express();
+
+// Middleware
+app.use(cors());
+app.use(express.json());
+
+// Routes
+app.get('/', (req, res) => {
+  res.json({
+    message: 'Hello World from nBilliardsNodeJS!',
+    timestamp: new Date().toISOString(),
+    status: 'success'
+  });
+});
+
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'healthy',
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Test endpoint that doesn't require database
+app.get('/api/test', (req, res) => {
+  res.json({
+    success: true,
+    message: 'API is working!',
+    timestamp: new Date().toISOString(),
+    endpoints: {
+      auth: '/api/v1/auth/*',
+      health: '/health',
+      main: '/'
+    }
+  });
+});
+
+// API Routes
+app.use('/api/v1/auth', authRoutes);
+
+// Initialize database connection (non-blocking)
+const startServer = async () => {
+  try {
+    await initializeDatabase();
+    console.log('âœ… Database initialized successfully');
+  } catch (error) {
+    console.error('âŒ Database initialization failed:', error);
+    console.log('âš ï¸  Server will continue without database connection');
+    console.log('ðŸ’¡ To fix: Start Docker Desktop and run: docker-compose up -d postgres');
+  }
+};
+
+// Start database connection (don't block server startup)
+startServer().catch(() => {
+  // Ignore database errors, server should continue
+});
+
+export default app;
+
+
+2. File: src\config\database.ts
+================================================================================
+import { Pool } from 'pg';
+
+const pool = new Pool({
+  host: process.env.DB_HOST || 'localhost',
+  port: parseInt(process.env.DB_PORT || '5432'),
+  database: process.env.DB_NAME || 'billiards_platform',
+  user: process.env.DB_USER || 'postgres',
+  password: process.env.DB_PASSWORD || 'password123',
+  max: 20,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 2000,
+});
+
+export default pool;
+
+
+3. File: src\config\orm.ts
+================================================================================
+import { DataSource } from 'typeorm';
+import { User } from '../entities/auth/User.entity';
+import { UserSession } from '../entities/auth/UserSession.entity';
+import { LoginAttempt } from '../entities/auth/LoginAttempt.entity';
+import { secrets } from './secrets';
+
+export const AppDataSource = new DataSource({
+  type: 'postgres',
+  url: secrets.DATABASE_URL,
+  entities: [
+    User,
+    UserSession,
+    LoginAttempt
+  ],
+  synchronize: false, // Set to false in production
+  logging: process.env.NODE_ENV === 'development',
+  migrations: ['src/migrations/*.ts'],
+  subscribers: ['src/subscribers/*.ts'],
+});
+
+// Initialize the data source
+export const initializeDatabase = async () => {
+  try {
+    if (!AppDataSource.isInitialized) {
+      await AppDataSource.initialize();
+      console.log('âœ… Database connection established');
+    } else {
+      console.log('âœ… Database already initialized');
+    }
+  } catch (error) {
+    console.error('âŒ Database connection failed:', error);
+    // Don't throw error, let server continue without database
+    return false;
+  }
+  return true;
+};
+
+
+4. File: src\config\secrets.ts
+================================================================================
+// Secret management configuration using Doppler
+// This file handles loading secrets from Doppler in production
+// Falls back to environment variables in development
+
+import dotenv from 'dotenv';
+
+// Load environment variables for development
+if (process.env.NODE_ENV !== 'production') {
+  dotenv.config();
+}
+
+// Secret configuration interface
+export interface SecretConfig {
+  // Database secrets
+  DB_HOST: string;
+  DB_PORT: string;
+  DB_NAME: string;
+  DB_USER: string;
+  DB_PASSWORD: string;
+  DATABASE_URL: string;
+  
+  // JWT secrets
+  JWT_SECRET: string;
+  
+  // Redis secrets
+  REDIS_URL: string;
+  
+  // Application secrets
+  NODE_ENV: string;
+  PORT: string;
+}
+
+// Load secrets from Doppler or environment variables
+const loadSecrets = (): SecretConfig => {
+  // In production, Doppler injects secrets as environment variables
+  // In development, we use .env file
+  
+  const requiredSecrets = [
+    'DATABASE_URL', 'JWT_SECRET', 'NODE_ENV', 'PORT'
+  ];
+  
+  const optionalSecrets = [
+    'DB_HOST', 'DB_PORT', 'DB_NAME', 'DB_USER', 'DB_PASSWORD', 'REDIS_URL'
+  ];
+  
+  const missingSecrets: string[] = [];
+  
+  const secrets: Partial<SecretConfig> = {};
+  
+  // Check required secrets
+  for (const secret of requiredSecrets) {
+    const value = process.env[secret];
+    if (!value) {
+      missingSecrets.push(secret);
+    } else {
+      secrets[secret as keyof SecretConfig] = value;
+    }
+  }
+  
+  // Load optional secrets (with defaults)
+  for (const secret of optionalSecrets) {
+    const value = process.env[secret];
+    if (value) {
+      secrets[secret as keyof SecretConfig] = value;
+    }
+  }
+  
+  // Set defaults for optional secrets
+  if (!secrets.DB_HOST) secrets.DB_HOST = 'localhost';
+  if (!secrets.DB_PORT) secrets.DB_PORT = '5432';
+  if (!secrets.DB_NAME) secrets.DB_NAME = 'billiards_platform';
+  if (!secrets.DB_USER) secrets.DB_USER = 'postgres';
+  if (!secrets.DB_PASSWORD) secrets.DB_PASSWORD = 'password123';
+  if (!secrets.REDIS_URL) secrets.REDIS_URL = 'redis://localhost:6379';
+  
+  if (missingSecrets.length > 0) {
+    throw new Error(`Missing required secrets: ${missingSecrets.join(', ')}`);
+  }
+  
+  return secrets as SecretConfig;
+};
+
+// Export the loaded secrets
+export const secrets = loadSecrets();
+
+// Validation function
+export const validateSecrets = (): boolean => {
+  try {
+    loadSecrets();
+    return true;
+  } catch (error) {
+    console.error('Secret validation failed:', error);
+    return false;
+  }
+};
+
+// Log secret status (without exposing values)
+export const logSecretStatus = (): void => {
+  console.log('ðŸ” Secret Management Status:');
+  console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`   Database: ${process.env.DB_HOST}:${process.env.DB_PORT}/${process.env.DB_NAME}`);
+  console.log(`   Redis: ${process.env.REDIS_URL ? 'Configured' : 'Not configured'}`);
+  console.log(`   JWT Secret: ${process.env.JWT_SECRET ? 'Configured' : 'Missing'}`);
+  console.log(`   Port: ${process.env.PORT || '3001'}`);
+};
+
+
+5. File: src\controllers\AuthController.ts
+================================================================================
+import { Request, Response } from 'express';
+import { AuthService } from '../services/AuthService';
+import { LoginDto, RegisterDto, RefreshTokenDto, ForgotPasswordDto, ResetPasswordDto, ChangePasswordDto } from '../dto/auth';
+
+interface AuthenticatedRequest extends Request {
+  user?: {
+    userId: string;
+    email: string;
+    accountType: string;
+    sessionId: string;
+  };
+}
+
+export class AuthController {
+  private authService: AuthService;
+
+  constructor() {
+    this.authService = new AuthService();
+  }
+
+  private getClientInfo(req: Request) {
+    const forwarded = req.headers['x-forwarded-for'];
+    const ip = forwarded ? (forwarded as string).split(',')[0] : req.connection.remoteAddress;
+    return {
+      ip: ip || '127.0.0.1',
+      userAgent: req.headers['user-agent'] || 'Unknown',
+      deviceInfo: {
+        browser: req.headers['user-agent']?.split('/')[0] || 'Unknown',
+        platform: req.headers['sec-ch-ua-platform'] || 'Unknown',
+        mobile: req.headers['sec-ch-ua-mobile'] === '?1'
+      }
+    };
+  }
+
+  async login(req: Request, res: Response): Promise<void> {
+    try {
+      const loginData: LoginDto = req.body;
+      const clientInfo = this.getClientInfo(req);
+
+      if (!loginData.email || !loginData.password) {
+        res.status(400).json({
+          success: false,
+          message: 'Email and password are required'
+        });
+        return;
+      }
+
+      const result = await this.authService.login(loginData, clientInfo);
+
+      res.json({
+        success: true,
+        message: 'Login successful',
+        data: result
+      });
+    } catch (error) {
+      console.error('Login error:', error);
+      if (error instanceof Error && error.message.includes('No metadata')) {
+        res.status(503).json({
+          success: false,
+          message: 'Database connection not available. Please start the database.',
+          error: 'DATABASE_CONNECTION_FAILED'
+        });
+      } else {
+        res.status(401).json({
+          success: false,
+          message: error instanceof Error ? error.message : 'Unknown error'
+        });
+      }
+    }
+  }
+
+  async register(req: Request, res: Response): Promise<void> {
+    try {
+      const registerData: RegisterDto = req.body;
+
+      // Validation
+      if (!registerData.email || !registerData.password || !registerData.firstName || !registerData.lastName) {
+        res.status(400).json({
+          success: false,
+          message: 'Email, password, first name, and last name are required'
+        });
+        return;
+      }
+
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(registerData.email)) {
+        res.status(400).json({
+          success: false,
+          message: 'Please provide a valid email address'
+        });
+        return;
+      }
+
+      if (registerData.password.length < 8) {
+        res.status(400).json({
+          success: false,
+          message: 'Password must be at least 8 characters long'
+        });
+        return;
+      }
+
+      const result = await this.authService.register(registerData);
+
+      res.status(201).json({
+        success: true,
+        message: 'User registered successfully',
+        data: result
+      });
+    } catch (error) {
+      console.error('Registration error:', error);
+      if (error instanceof Error && error.message.includes('already exists')) {
+        res.status(409).json({
+          success: false,
+          message: error.message
+        });
+      } else if (error instanceof Error && error.message.includes('No metadata')) {
+        res.status(503).json({
+          success: false,
+          message: 'Database connection not available. Please start the database.',
+          error: 'DATABASE_CONNECTION_FAILED'
+        });
+      } else {
+        res.status(500).json({
+          success: false,
+          message: error instanceof Error ? error.message : 'Internal server error'
+        });
+      }
+    }
+  }
+
+  async refreshToken(req: Request, res: Response): Promise<void> {
+    try {
+      const { refreshToken }: RefreshTokenDto = req.body;
+      const clientInfo = this.getClientInfo(req);
+
+      if (!refreshToken) {
+        res.status(400).json({
+          success: false,
+          message: 'Refresh token is required'
+        });
+        return;
+      }
+
+      const result = await this.authService.refreshToken(refreshToken, clientInfo);
+
+      res.json({
+        success: true,
+        message: 'Token refreshed successfully',
+        data: result
+      });
+    } catch (error) {
+      res.status(401).json({
+        success: false,
+        message: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+
+  async logout(req: Request, res: Response): Promise<void> {
+    try {
+      const { refreshToken }: RefreshTokenDto = req.body;
+
+      if (!refreshToken) {
+        res.status(400).json({
+          success: false,
+          message: 'Refresh token is required'
+        });
+        return;
+      }
+
+      await this.authService.logout(refreshToken);
+
+      res.json({
+        success: true,
+        message: 'Logged out successfully'
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        message: 'Internal server error'
+      });
+    }
+  }
+
+  async logoutAll(req: Request, res: Response): Promise<void> {
+    try {
+      const { refreshToken }: RefreshTokenDto = req.body;
+
+      if (!refreshToken) {
+        res.status(400).json({
+          success: false,
+          message: 'Refresh token is required'
+        });
+        return;
+      }
+
+      await this.authService.logoutAllDevices(refreshToken);
+
+      res.json({
+        success: true,
+        message: 'Logged out from all devices successfully'
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        message: 'Internal server error'
+      });
+    }
+  }
+
+  async forgotPassword(req: Request, res: Response): Promise<void> {
+    try {
+      const { email }: ForgotPasswordDto = req.body;
+
+      if (!email) {
+        res.status(400).json({
+          success: false,
+          message: 'Email is required'
+        });
+        return;
+      }
+
+      const result = await this.authService.forgotPassword(email);
+
+      res.json({
+        success: true,
+        message: 'If an account with that email exists, a password reset link has been sent',
+        // Remove in production
+        debug: { resetToken: result.resetToken }
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        message: 'Internal server error'
+      });
+    }
+  }
+
+  async resetPassword(req: Request, res: Response): Promise<void> {
+    try {
+      const { token, newPassword }: ResetPasswordDto = req.body;
+
+      if (!token || !newPassword) {
+        res.status(400).json({
+          success: false,
+          message: 'Token and new password are required'
+        });
+        return;
+      }
+
+      if (newPassword.length < 8) {
+        res.status(400).json({
+          success: false,
+          message: 'Password must be at least 8 characters long'
+        });
+        return;
+      }
+
+      await this.authService.resetPassword(token, newPassword);
+
+      res.json({
+        success: true,
+        message: 'Password has been reset successfully'
+      });
+    } catch (error) {
+      res.status(400).json({
+        success: false,
+        message: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+
+  async changePassword(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const { currentPassword, newPassword }: ChangePasswordDto = req.body;
+      const clientInfo = this.getClientInfo(req);
+
+      if (!req.user) {
+        res.status(401).json({
+          success: false,
+          message: 'User not authenticated'
+        });
+        return;
+      }
+
+      if (!currentPassword || !newPassword) {
+        res.status(400).json({
+          success: false,
+          message: 'Current password and new password are required'
+        });
+        return;
+      }
+
+      if (newPassword.length < 8) {
+        res.status(400).json({
+          success: false,
+          message: 'New password must be at least 8 characters long'
+        });
+        return;
+      }
+
+      const result = await this.authService.changePassword(
+        req.user.userId,
+        currentPassword,
+        newPassword,
+        clientInfo
+      );
+
+      res.json({
+        success: true,
+        message: 'Password changed successfully. All other sessions have been terminated.',
+        data: result
+      });
+    } catch (error) {
+      res.status(400).json({
+        success: false,
+        message: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+
+  async verifyEmail(req: Request, res: Response): Promise<void> {
+    try {
+      const { token } = req.body;
+
+      if (!token) {
+        res.status(400).json({
+          success: false,
+          message: 'Verification token is required'
+        });
+        return;
+      }
+
+      await this.authService.verifyEmail(token);
+
+      res.json({
+        success: true,
+        message: 'Email verified successfully'
+      });
+    } catch (error) {
+      res.status(400).json({
+        success: false,
+        message: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+
+  async verifyPhone(req: Request, res: Response): Promise<void> {
+    try {
+      const { code, phone } = req.body;
+
+      if (!code || !phone) {
+        res.status(400).json({
+          success: false,
+          message: 'Verification code and phone number are required'
+        });
+        return;
+      }
+
+      await this.authService.verifyPhone(phone, code);
+
+      res.json({
+        success: true,
+        message: 'Phone number verified successfully'
+      });
+    } catch (error) {
+      res.status(400).json({
+        success: false,
+        message: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+
+  async getProfile(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      if (!req.user) {
+        res.status(401).json({
+          success: false,
+          message: 'User not authenticated'
+        });
+        return;
+      }
+
+      const user = await this.authService.getUserProfile(req.user.userId);
+
+      res.json({
+        success: true,
+        data: { user }
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        message: 'Internal server error'
+      });
+    }
+  }
+
+  async getSessions(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      if (!req.user) {
+        res.status(401).json({
+          success: false,
+          message: 'User not authenticated'
+        });
+        return;
+      }
+
+      const sessions = await this.authService.getUserSessions(req.user.userId);
+
+      res.json({
+        success: true,
+        data: {
+          sessions: sessions.map(session => ({
+            id: session.id,
+            deviceInfo: session.deviceInfo,
+            ipAddress: session.ipAddress,
+            userAgent: session.userAgent,
+            createdAt: session.createdAt,
+            lastUsedAt: session.lastUsedAt,
+            expiresAt: session.expiresAt,
+            isCurrent: session.id === req.user?.sessionId
+          }))
+        }
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        message: 'Internal server error'
+      });
+    }
+  }
+}
+
+6. File: src\dto\auth\index.ts
+================================================================================
+export interface LoginDto {
+  email: string;
+  password: string;
+}
+
+export interface RegisterDto {
+  email: string;
+  password: string;
+  firstName: string;
+  lastName: string;
+  phone?: string;
+  dateOfBirth?: Date;
+}
+
+export interface UserResponseDto {
+  id: string;
+  email: string;
+  phone?: string;
+  firstName: string;
+  lastName: string;
+  dateOfBirth?: Date;
+  emailVerified: boolean;
+  phoneVerified: boolean;
+  isActive: boolean;
+  isPremium: boolean;
+  accountType: string;
+  lastLogin?: Date;
+  createdAt: Date;
+}
+
+export interface RefreshTokenDto {
+  refreshToken: string;
+}
+
+export interface ForgotPasswordDto {
+  email: string;
+}
+
+export interface ResetPasswordDto {
+  token: string;
+  newPassword: string;
+}
+
+export interface ChangePasswordDto {
+  currentPassword: string;
+  newPassword: string;
+}
+
+
+7. File: src\entities\auth\LoginAttempt.entity.ts
+================================================================================
+import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn } from 'typeorm';
+
+@Entity('login_attempts')
+export class LoginAttempt {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Column()
+  email: string;
+
+  @Column({ name: 'ip_address' })
+  ipAddress: string;
+
+  @Column({ name: 'user_agent' })
+  userAgent: string;
+
+  @Column()
+  success: boolean;
+
+  @Column({ name: 'failure_reason', nullable: true })
+  failureReason: string;
+
+  @CreateDateColumn({ name: 'attempted_at' })
+  attemptedAt: Date;
+}
+
+
+8. File: src\entities\auth\User.entity.ts
+================================================================================
+import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, OneToMany } from 'typeorm';
+import { UserSession } from './UserSession.entity';
+
+@Entity('users')
+export class User {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Column({ unique: true })
+  email: string;
+
+  @Column({ nullable: true })
+  phone: string;
+
+  @Column({ name: 'password_hash' })
+  passwordHash: string;
+
+  @Column({ name: 'first_name' })
+  firstName: string;
+
+  @Column({ name: 'last_name' })
+  lastName: string;
+
+  @Column({ name: 'date_of_birth', type: 'date', nullable: true })
+  dateOfBirth: Date;
+
+  @Column({ name: 'email_verified', default: false })
+  emailVerified: boolean;
+
+  @Column({ name: 'phone_verified', default: false })
+  phoneVerified: boolean;
+
+  @Column({ name: 'is_active', default: true })
+  isActive: boolean;
+
+  @Column({ name: 'is_premium', default: false })
+  isPremium: boolean;
+
+  @Column({ name: 'account_type', default: 'player' })
+  accountType: 'player' | 'admin';
+
+  @Column({ name: 'last_login', type: 'timestamp', nullable: true })
+  lastLogin: Date;
+
+  @Column({ name: 'last_ip', nullable: true })
+  lastIp: string;
+
+  @Column({ name: 'login_attempts', default: 0 })
+  loginAttempts: number;
+
+  @Column({ name: 'locked_until', type: 'timestamp', nullable: true })
+  lockedUntil: Date | null;
+
+  @Column({ name: 'password_reset_token', type: 'varchar', nullable: true })
+  passwordResetToken: string | null;
+
+  @Column({ name: 'password_reset_expires', type: 'timestamp', nullable: true })
+  passwordResetExpires: Date | null;
+
+  @Column({ name: 'email_verification_token', type: 'varchar', nullable: true })
+  emailVerificationToken: string | null;
+
+  @Column({ name: 'email_verification_expires', type: 'timestamp', nullable: true })
+  emailVerificationExpires: Date | null;
+
+  @Column({ name: 'phone_verification_code', type: 'varchar', nullable: true })
+  phoneVerificationCode: string | null;
+
+  @Column({ name: 'password_changed_at', type: 'timestamp', nullable: true })
+  passwordChangedAt: Date;
+
+  @CreateDateColumn({ name: 'created_at' })
+  createdAt: Date;
+
+  @UpdateDateColumn({ name: 'updated_at' })
+  updatedAt: Date;
+
+  @OneToMany(() => UserSession, session => session.user)
+  sessions: UserSession[];
+}
+
+
+9. File: src\entities\auth\UserSession.entity.ts
+================================================================================
+import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, ManyToOne, JoinColumn } from 'typeorm';
+import { User } from './User.entity';
+
+@Entity('user_sessions')
+export class UserSession {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Column({ name: 'user_id' })
+  userId: string;
+
+  @Column({ name: 'refresh_token_hash' })
+  refreshTokenHash: string;
+
+  @Column({ type: 'jsonb', name: 'device_info' })
+  deviceInfo: any;
+
+  @Column({ name: 'ip_address' })
+  ipAddress: string;
+
+  @Column({ name: 'user_agent' })
+  userAgent: string;
+
+  @Column({ name: 'is_active', default: true })
+  isActive: boolean;
+
+  @Column({ name: 'expires_at', type: 'timestamp' })
+  expiresAt: Date;
+
+  @Column({ name: 'last_used_at', type: 'timestamp', nullable: true })
+  lastUsedAt: Date;
+
+  @CreateDateColumn({ name: 'created_at' })
+  createdAt: Date;
+
+  @UpdateDateColumn({ name: 'updated_at' })
+  updatedAt: Date;
+
+  @ManyToOne(() => User, user => user.sessions)
+  @JoinColumn({ name: 'user_id' })
+  user: User;
+}
+
+
+10. File: src\middleware\auth.middleware.ts
+================================================================================
+import { Request, Response, NextFunction } from 'express';
+import jwt from 'jsonwebtoken';
+import { secrets } from '../config/secrets';
+
+interface AuthenticatedRequest extends Request {
+  user?: {
+    userId: string;
+    email: string;
+    accountType: string;
+    sessionId: string;
+  };
+}
+
+export const authenticateToken = (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token) {
+    return res.status(401).json({
+      success: false,
+      message: 'Access token required'
+    });
+  }
+
+  jwt.verify(token, secrets.JWT_SECRET, (err: any, decoded: any) => {
+    if (err) {
+      return res.status(403).json({
+        success: false,
+        message: 'Invalid or expired token'
+      });
+    }
+    
+    req.user = decoded;
+    next();
+  });
+};
+
+export const authorizeRoles = (...roles: string[]) => {
+  return (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    if (!req.user) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authentication required'
+      });
+    }
+
+    if (!roles.includes(req.user.accountType)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Insufficient permissions'
+      });
+    }
+
+    next();
+  };
+};
+
+
+11. File: src\middleware\auth.ts
+================================================================================
+// src/middleware/auth.ts
+import { Request, Response, NextFunction } from 'express';
+import jwt from 'jsonwebtoken';
+import { secrets } from '../config/secrets';
+
+interface AuthenticatedRequest extends Request {
+  user?: any;
+}
+
+export const authenticateToken = (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token) {
+    return res.status(401).json({
+      success: false,
+      message: 'Access token required'
+    });
+  }
+
+  jwt.verify(token, secrets.JWT_SECRET, (err: any, user: any) => {
+    if (err) {
+      return res.status(403).json({
+        success: false,
+        message: 'Invalid or expired token'
+      });
+    }
+    
+    req.user = user;
+    next();
+  });
+};
+
+
+12. File: src\models\User.ts
+================================================================================
+// src/models/User.ts
+export interface User {
+  id: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  passwordHash: string;
+  emailVerified: boolean;
+  phoneVerified: boolean;
+  isActive: boolean;
+  isPremium: boolean;
+  accountType: 'player' | 'admin';
+  lastLogin?: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface UserSession {
+  id: string;
+  userId: string;
+  refreshTokenHash: string;
+  deviceInfo: any;
+  ipAddress: string;
+  userAgent: string;
+  isActive: boolean;
+  expiresAt: Date;
+  createdAt: Date;
+  lastUsedAt: Date;
+}
+
+
+13. File: src\repositories\implementations\auth\AuthRepository.ts
+================================================================================
+import { Repository } from 'typeorm';
+import { AppDataSource } from '../../../config/orm';
+import { User } from '../../../entities/auth/User.entity';
+import { IAuthRepository } from '../../interfaces/auth/IAuthRepository';
+import crypto from 'crypto';
+
+export class AuthRepository implements IAuthRepository {
+  private userRepository: Repository<User> | null = null;
+
+  constructor() {
+    // Lazy initialization - will be initialized when first used
+  }
+
+  private ensureRepository(): Repository<User> {
+    if (!this.userRepository) {
+      if (!AppDataSource.isInitialized) {
+        throw new Error('Database not initialized. Call initializeDatabase() first.');
+      }
+      this.userRepository = AppDataSource.getRepository(User);
+    }
+    return this.userRepository;
+  }
+
+  async findUserByEmail(email: string): Promise<User | null> {
+    try {
+      return await this.ensureRepository().findOne({
+        where: { email, isActive: true }
+      });
+    } catch (error) {
+      throw new Error(`Failed to find user by email: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async findUserById(id: string): Promise<User | null> {
+    try {
+      return await this.ensureRepository().findOne({
+        where: { id, isActive: true }
+      });
+    } catch (error) {
+      throw new Error(`Failed to find user by ID: ${error instanceof Error ? error instanceof Error ? error.message : 'Unknown error' : 'Unknown error'}`);
+    }
+  }
+
+  async createUser(userData: Partial<User>): Promise<User> {
+    try {
+      const user = this.ensureRepository().create(userData);
+      return await this.ensureRepository().save(user);
+    } catch (error) {
+      throw new Error(`Failed to create user: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async updateUserPassword(userId: string, hashedPassword: string): Promise<void> {
+    try {
+      await this.ensureRepository().update(userId, {
+        passwordHash: hashedPassword,
+        passwordChangedAt: new Date(),
+        updatedAt: new Date()
+      });
+    } catch (error) {
+      throw new Error(`Failed to update user password: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async updateLastLogin(userId: string, ip: string): Promise<void> {
+    try {
+      await this.ensureRepository().update(userId, {
+        lastLogin: new Date(),
+        lastIp: ip,
+        loginAttempts: 0,
+        lockedUntil: undefined
+      });
+    } catch (error) {
+      throw new Error(`Failed to update last login: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async incrementLoginAttempts(userId: string): Promise<void> {
+    try {
+      await this.ensureRepository().increment({ id: userId }, 'loginAttempts', 1);
+      
+      const user = await this.findUserById(userId);
+      if (user && user.loginAttempts >= 4) {
+        const lockUntil = new Date(Date.now() + 30 * 60 * 1000);
+        await this.lockAccount(userId, lockUntil);
+      }
+    } catch (error) {
+      throw new Error(`Failed to increment login attempts: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async resetLoginAttempts(userId: string): Promise<void> {
+    try {
+      await this.ensureRepository().update(userId, {
+        loginAttempts: 0,
+        lockedUntil: undefined
+      });
+    } catch (error) {
+      throw new Error(`Failed to reset login attempts: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async lockAccount(userId: string, until: Date): Promise<void> {
+    try {
+      await this.ensureRepository().update(userId, { lockedUntil: until });
+    } catch (error) {
+      throw new Error(`Failed to lock account: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async isAccountLocked(userId: string): Promise<boolean> {
+    try {
+      const user = await this.ensureRepository().findOne({
+        where: { id: userId },
+        select: { lockedUntil: true }
+      });
+      return user?.lockedUntil ? new Date(user.lockedUntil) > new Date() : false;
+    } catch (error) {
+      throw new Error(`Failed to check account lock status: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async updateEmailVerificationToken(userId: string, token: string, expiresAt: Date): Promise<void> {
+    try {
+      await this.ensureRepository().update(userId, {
+        emailVerificationToken: token,
+        emailVerificationExpires: expiresAt
+      });
+    } catch (error) {
+      throw new Error(`Failed to update email verification token: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async verifyEmail(token: string): Promise<User | null> {
+    try {
+      const user = await this.ensureRepository().findOne({
+        where: {
+          emailVerificationToken: token,
+          emailVerified: false,
+          isActive: true
+        }
+      });
+
+      if (user && user.emailVerificationExpires && user.emailVerificationExpires > new Date()) {
+        await this.ensureRepository().update(user.id, {
+          emailVerified: true,
+          emailVerificationToken: undefined,
+          emailVerificationExpires: undefined
+        });
+        return user;
+      }
+      return null;
+    } catch (error) {
+      throw new Error(`Failed to verify email: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async updatePasswordResetToken(userId: string, token: string, expiresAt: Date): Promise<void> {
+    try {
+      const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+      await this.ensureRepository().update(userId, {
+        passwordResetToken: tokenHash,
+        passwordResetExpires: expiresAt
+      });
+    } catch (error) {
+      throw new Error(`Failed to update password reset token: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async findUserByResetToken(token: string): Promise<User | null> {
+    try {
+      const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+      return await this.ensureRepository().findOne({
+        where: {
+          passwordResetToken: tokenHash,
+          isActive: true
+        }
+      });
+    } catch (error) {
+      throw new Error(`Failed to find user by reset token: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async clearPasswordResetToken(userId: string): Promise<void> {
+    try {
+      await this.ensureRepository().update(userId, {
+        passwordResetToken: undefined,
+        passwordResetExpires: undefined
+      });
+    } catch (error) {
+      throw new Error(`Failed to clear password reset token: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async updatePhoneVerificationCode(userId: string, code: string): Promise<void> {
+    try {
+      await this.ensureRepository().update(userId, { phoneVerificationCode: code });
+    } catch (error) {
+      throw new Error(`Failed to update phone verification code: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async verifyPhone(phone: string, code: string): Promise<User | null> {
+    try {
+      const user = await this.ensureRepository().findOne({
+        where: {
+          phone,
+          phoneVerificationCode: code,
+          phoneVerified: false,
+          isActive: true
+        }
+      });
+
+      if (user) {
+        await this.ensureRepository().update(user.id, {
+          phoneVerified: true,
+          phoneVerificationCode: undefined
+        });
+        return user;
+      }
+      return null;
+    } catch (error) {
+      throw new Error(`Failed to verify phone: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async checkEmailExists(email: string): Promise<boolean> {
+    try {
+      const count = await this.ensureRepository().count({ where: { email } });
+      return count > 0;
+    } catch (error) {
+      throw new Error(`Failed to check email existence: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async checkPhoneExists(phone: string): Promise<boolean> {
+    try {
+      const count = await this.ensureRepository().count({ where: { phone } });
+      return count > 0;
+    } catch (error) {
+      throw new Error(`Failed to check phone existence: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+}
+
+
+14. File: src\repositories\implementations\auth\LoginAttemptRepository.ts
+================================================================================
+import { Repository, MoreThan } from 'typeorm';
+import { AppDataSource } from '../../../config/orm';
+import { LoginAttempt } from '../../../entities/auth/LoginAttempt.entity';
+import { ILoginAttemptRepository } from '../../interfaces/auth/ILoginAttemptRepository';
+
+export class LoginAttemptRepository implements ILoginAttemptRepository {
+  private repository: Repository<LoginAttempt>;
+
+  constructor() {
+    this.repository = AppDataSource.getRepository(LoginAttempt);
+  }
+
+  async logLoginAttempt(attemptData: Partial<LoginAttempt>): Promise<LoginAttempt> {
+    try {
+      const attempt = this.repository.create(attemptData);
+      return await this.repository.save(attempt);
+    } catch (error) {
+      throw new Error(`Failed to log login attempt: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async getRecentFailedAttempts(email: string, minutes: number): Promise<number> {
+    try {
+      const cutoffTime = new Date(Date.now() - minutes * 60 * 1000);
+      return await this.repository.count({
+        where: {
+          email,
+          success: false,
+          attemptedAt: MoreThan(cutoffTime)
+        }
+      });
+    } catch (error) {
+      throw new Error(`Failed to get recent failed attempts: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async getRecentAttemptsByIP(ip: string, minutes: number): Promise<number> {
+    try {
+      const cutoffTime = new Date(Date.now() - minutes * 60 * 1000);
+      return await this.repository.count({
+        where: {
+          ipAddress: ip,
+          success: false,
+          attemptedAt: MoreThan(cutoffTime)
+        }
+      });
+    } catch (error) {
+      throw new Error(`Failed to get recent attempts by IP: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async cleanOldAttempts(daysOld: number): Promise<number> {
+    try {
+      const cutoffDate = new Date(Date.now() - daysOld * 24 * 60 * 60 * 1000);
+      const result = await this.repository.delete({
+        attemptedAt: MoreThan(cutoffDate)
+      });
+      return result.affected || 0;
+    } catch (error) {
+      throw new Error(`Failed to clean old attempts: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+}
+
+
+15. File: src\repositories\implementations\auth\SessionRepository.ts
+================================================================================
+import { Repository } from 'typeorm';
+import { AppDataSource } from '../../../config/orm';
+import { UserSession } from '../../../entities/auth/UserSession.entity';
+import { ISessionRepository } from '../../interfaces/auth/ISessionRepository';
+
+export class SessionRepository implements ISessionRepository {
+  private sessionRepository: Repository<UserSession>;
+
+  constructor() {
+    this.sessionRepository = AppDataSource.getRepository(UserSession);
+  }
+
+  async createSession(sessionData: Partial<UserSession>): Promise<UserSession> {
+    try {
+      const session = this.sessionRepository.create(sessionData);
+      return await this.sessionRepository.save(session);
+    } catch (error) {
+      throw new Error(`Failed to create session: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async findSessionByRefreshToken(refreshTokenHash: string): Promise<UserSession | null> {
+    try {
+      return await this.sessionRepository.findOne({
+        where: { refreshTokenHash, isActive: true },
+        relations: ['user']
+      });
+    } catch (error) {
+      throw new Error(`Failed to find session by refresh token: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async updateSessionLastUsed(sessionId: string, ip: string, userAgent: string): Promise<void> {
+    try {
+      await this.sessionRepository.update(sessionId, {
+        lastUsedAt: new Date(),
+        ipAddress: ip,
+        userAgent: userAgent
+      });
+    } catch (error) {
+      throw new Error(`Failed to update session last used: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async deactivateSession(sessionId: string): Promise<void> {
+    try {
+      await this.sessionRepository.update(sessionId, {
+        isActive: false,
+        lastUsedAt: new Date()
+      });
+    } catch (error) {
+      throw new Error(`Failed to deactivate session: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async deactivateAllUserSessions(userId: string): Promise<void> {
+    try {
+      await this.sessionRepository.update(
+        { userId, isActive: true },
+        { isActive: false, lastUsedAt: new Date() }
+      );
+    } catch (error) {
+      throw new Error(`Failed to deactivate all user sessions: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async findActiveUserSessions(userId: string): Promise<UserSession[]> {
+    try {
+      return await this.sessionRepository.find({
+        where: { userId, isActive: true },
+        order: { lastUsedAt: 'DESC' }
+      });
+    } catch (error) {
+      throw new Error(`Failed to find active user sessions: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async cleanExpiredSessions(): Promise<number> {
+    try {
+      const result = await this.sessionRepository.update(
+        { isActive: true },
+        { isActive: false }
+      );
+      return result.affected || 0;
+    } catch (error) {
+      throw new Error(`Failed to clean expired sessions: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async findSessionById(sessionId: string): Promise<UserSession | null> {
+    try {
+      return await this.sessionRepository.findOne({
+        where: { id: sessionId, isActive: true },
+        relations: ['user']
+      });
+    } catch (error) {
+      throw new Error(`Failed to find session by ID: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+}
+
+
+16. File: src\repositories\interfaces\auth\IAuthRepository.ts
+================================================================================
+import { User } from '../../../entities/auth/User.entity';
+
+export interface IAuthRepository {
+  findUserByEmail(email: string): Promise<User | null>;
+  findUserById(id: string): Promise<User | null>;
+  createUser(userData: Partial<User>): Promise<User>;
+  updateUserPassword(userId: string, hashedPassword: string): Promise<void>;
+  updateLastLogin(userId: string, ip: string): Promise<void>;
+  incrementLoginAttempts(userId: string): Promise<void>;
+  resetLoginAttempts(userId: string): Promise<void>;
+  lockAccount(userId: string, until: Date): Promise<void>;
+  isAccountLocked(userId: string): Promise<boolean>;
+  updateEmailVerificationToken(userId: string, token: string, expiresAt: Date): Promise<void>;
+  verifyEmail(token: string): Promise<User | null>;
+  updatePasswordResetToken(userId: string, token: string, expiresAt: Date): Promise<void>;
+  findUserByResetToken(token: string): Promise<User | null>;
+  clearPasswordResetToken(userId: string): Promise<void>;
+  updatePhoneVerificationCode(userId: string, code: string): Promise<void>;
+  verifyPhone(phone: string, code: string): Promise<User | null>;
+  checkEmailExists(email: string): Promise<boolean>;
+  checkPhoneExists(phone: string): Promise<boolean>;
+}
+
+
+17. File: src\repositories\interfaces\auth\ILoginAttemptRepository.ts
+================================================================================
+import { LoginAttempt } from '../../../entities/auth/LoginAttempt.entity';
+
+export interface ILoginAttemptRepository {
+  logLoginAttempt(attemptData: Partial<LoginAttempt>): Promise<LoginAttempt>;
+  getRecentFailedAttempts(email: string, minutes: number): Promise<number>;
+  getRecentAttemptsByIP(ip: string, minutes: number): Promise<number>;
+  cleanOldAttempts(daysOld: number): Promise<number>;
+}
+
+
+18. File: src\repositories\interfaces\auth\ISessionRepository.ts
+================================================================================
+import { UserSession } from '../../../entities/auth/UserSession.entity';
+
+export interface ISessionRepository {
+  createSession(sessionData: Partial<UserSession>): Promise<UserSession>;
+  findSessionByRefreshToken(refreshTokenHash: string): Promise<UserSession | null>;
+  updateSessionLastUsed(sessionId: string, ip: string, userAgent: string): Promise<void>;
+  deactivateSession(sessionId: string): Promise<void>;
+  deactivateAllUserSessions(userId: string): Promise<void>;
+  findActiveUserSessions(userId: string): Promise<UserSession[]>;
+  cleanExpiredSessions(): Promise<number>;
+  findSessionById(sessionId: string): Promise<UserSession | null>;
+}
+
+
+19. File: src\routes\auth.ts
+================================================================================
+import express from 'express';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
+import pool from '../config/database';
+import { secrets } from '../config/secrets';
+
+const router = express.Router();
+
+// Helper function to get client info
+const getClientInfo = (req: express.Request) => {
+  const forwarded = req.headers['x-forwarded-for'];
+  const ip = forwarded ? (forwarded as string).split(',')[0] : req.connection.remoteAddress;
+  return {
+    ip: ip || '127.0.0.1',
+    userAgent: req.headers['user-agent'] || 'Unknown',
+    deviceInfo: {
+      browser: req.headers['user-agent']?.split('/')[0] || 'Unknown',
+      platform: req.headers['sec-ch-ua-platform'] || 'Unknown',
+      mobile: req.headers['sec-ch-ua-mobile'] === '?1'
+    }
+  };
+};
+
+// Helper function to log login attempts
+const logLoginAttempt = async (email: string, success: boolean, clientInfo: any, failureReason?: string) => {
+  try {
+    await pool.query(
+      `INSERT INTO login_attempts (email, ip_address, user_agent, success, failure_reason, attempted_at)
+       VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)`,
+      [email, clientInfo.ip, clientInfo.userAgent, success, failureReason || null]
+    );
+  } catch (error) {
+    console.error('Failed to log login attempt:', error);
+  }
+};
+
+// Helper function to create user session
+const createUserSession = async (userId: string, clientInfo: any) => {
+  const refreshToken = crypto.randomBytes(32).toString('hex');
+  const refreshTokenHash = crypto.createHash('sha256').update(refreshToken).digest('hex');
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+
+  const sessionResult = await pool.query(
+    `INSERT INTO user_sessions (user_id, refresh_token_hash, device_info, ip_address, user_agent, expires_at)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     RETURNING id`,
+    [userId, refreshTokenHash, JSON.stringify(clientInfo.deviceInfo), clientInfo.ip, clientInfo.userAgent, expiresAt]
+  );
+
+  return {
+    sessionId: sessionResult.rows[0].id,
+    refreshToken,
+    expiresAt
+  };
+};
+
+// Login endpoint with session management
+router.post('/login', async (req, res) => {
+  const clientInfo = getClientInfo(req);
+  
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      await logLoginAttempt(email || 'unknown', false, clientInfo, 'missing_credentials');
+      return res.status(400).json({
+        success: false,
+        message: 'Email and password are required'
+      });
+    }
+
+    // Check for recent failed attempts (brute force protection)
+    const recentAttemptsQuery = `
+      SELECT COUNT(*) as failed_count
+      FROM login_attempts 
+      WHERE email = $1 AND success = false 
+      AND attempted_at > NOW() - INTERVAL '15 minutes'
+    `;
+    const recentAttempts = await pool.query(recentAttemptsQuery, [email]);
+    
+    if (parseInt(recentAttempts.rows[0].failed_count) >= 5) {
+      await logLoginAttempt(email, false, clientInfo, 'rate_limited');
+      return res.status(429).json({
+        success: false,
+        message: 'Too many failed attempts. Please try again in 15 minutes.'
+      });
+    }
+
+    // Find user by email with new table structure
+    const userQuery = `
+      SELECT u.*, up.skill_level, up.bio, up.notification_settings, up.privacy_settings
+      FROM users u
+      LEFT JOIN user_preferences up ON u.id = up.user_id
+      WHERE u.email = $1 AND u.is_active = true
+    `;
+    
+    const userResult = await pool.query(userQuery, [email]);
+    
+    if (userResult.rows.length === 0) {
+      await logLoginAttempt(email, false, clientInfo, 'user_not_found');
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid email or password'
+      });
+    }
+
+    const user = userResult.rows[0];
+
+    // Check if account is locked
+    if (user.locked_until && new Date(user.locked_until) > new Date()) {
+      await logLoginAttempt(email, false, clientInfo, 'account_locked');
+      return res.status(423).json({
+        success: false,
+        message: 'Account is temporarily locked. Please try again later.'
+      });
+    }
+
+    // Check password
+    const isValidPassword = await bcrypt.compare(password, user.password_hash);
+    
+    if (!isValidPassword) {
+      // Update failed login attempts
+      await pool.query(
+        `UPDATE users SET login_attempts = login_attempts + 1,
+         locked_until = CASE WHEN login_attempts >= 4 THEN NOW() + INTERVAL '30 minutes' ELSE NULL END
+         WHERE id = $1`,
+        [user.id]
+      );
+      
+      await logLoginAttempt(email, false, clientInfo, 'invalid_password');
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid email or password'
+      });
+    }
+
+    // Successful login - create session and update user
+    const session = await createUserSession(user.id, clientInfo);
+    
+    // Update user last login info and reset failed attempts
+    await pool.query(
+      `UPDATE users SET 
+       last_login = CURRENT_TIMESTAMP, 
+       last_ip = $1, 
+       login_attempts = 0, 
+       locked_until = NULL
+       WHERE id = $2`,
+      [clientInfo.ip, user.id]
+    );
+
+    // Log successful login
+    await logLoginAttempt(email, true, clientInfo);
+
+    // Generate JWT access token
+    const accessToken = jwt.sign(
+      { 
+        userId: user.id, 
+        email: user.email,
+        accountType: user.account_type || 'player',
+        sessionId: session.sessionId
+      },
+      secrets.JWT_SECRET,
+      { expiresIn: '15m' } // Short-lived access token
+    );
+
+    // Remove sensitive data from response
+    delete user.password_hash;
+    delete user.password_reset_token;
+    delete user.email_verification_token;
+
+    res.json({
+      success: true,
+      message: 'Login successful',
+      data: {
+        accessToken,
+        refreshToken: session.refreshToken,
+        expiresAt: session.expiresAt,
+        user: {
+          id: user.id,
+          email: user.email,
+          firstName: user.first_name,
+          lastName: user.last_name,
+          emailVerified: user.email_verified,
+          phoneVerified: user.phone_verified,
+          isActive: user.is_active,
+          isPremium: user.is_premium,
+          accountType: user.account_type,
+          lastLogin: user.last_login,
+          profile: {
+            skillLevel: user.skill_level,
+            bio: user.bio,
+            notificationSettings: user.notification_settings,
+            privacySettings: user.privacy_settings
+          }
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Login error:', error);
+    await logLoginAttempt(req.body.email || 'unknown', false, clientInfo, 'server_error');
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
+// Refresh token endpoint
+router.post('/refresh', async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+    const clientInfo = getClientInfo(req);
+
+    if (!refreshToken) {
+      return res.status(400).json({
+        success: false,
+        message: 'Refresh token is required'
+      });
+    }
+
+    // Hash the refresh token to compare with database
+    const refreshTokenHash = crypto.createHash('sha256').update(refreshToken).digest('hex');
+
+    // Find active session
+    const sessionQuery = `
+      SELECT us.*, u.email, u.account_type, u.is_active
+      FROM user_sessions us
+      JOIN users u ON us.user_id = u.id
+      WHERE us.refresh_token_hash = $1 
+      AND us.is_active = true 
+      AND us.expires_at > CURRENT_TIMESTAMP
+    `;
+    
+    const sessionResult = await pool.query(sessionQuery, [refreshTokenHash]);
+    
+    if (sessionResult.rows.length === 0) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid or expired refresh token'
+      });
+    }
+
+    const session = sessionResult.rows[0];
+    
+    if (!session.is_active) {
+      return res.status(401).json({
+        success: false,
+        message: 'Account is not active'
+      });
+    }
+
+    // Update session last used time and IP
+    await pool.query(
+      `UPDATE user_sessions SET 
+       last_used_at = CURRENT_TIMESTAMP,
+       ip_address = $1,
+       user_agent = $2
+       WHERE id = $3`,
+      [clientInfo.ip, clientInfo.userAgent, session.id]
+    );
+
+    // Generate new access token
+    const accessToken = jwt.sign(
+      { 
+        userId: session.user_id, 
+        email: session.email,
+        accountType: session.account_type || 'player',
+        sessionId: session.id
+      },
+      secrets.JWT_SECRET,
+      { expiresIn: '15m' }
+    );
+
+    res.json({
+      success: true,
+      message: 'Token refreshed successfully',
+      data: {
+        accessToken,
+        expiresIn: '15m'
+      }
+    });
+
+  } catch (error) {
+    console.error('Refresh token error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
+// Logout endpoint
+router.post('/logout', async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+
+    if (!refreshToken) {
+      return res.status(400).json({
+        success: false,
+        message: 'Refresh token is required'
+      });
+    }
+
+    // Hash the refresh token to find the session
+    const refreshTokenHash = crypto.createHash('sha256').update(refreshToken).digest('hex');
+
+    // Deactivate the session
+    await pool.query(
+      `UPDATE user_sessions SET 
+       is_active = false,
+       last_used_at = CURRENT_TIMESTAMP
+       WHERE refresh_token_hash = $1`,
+      [refreshTokenHash]
+    );
+
+    res.json({
+      success: true,
+      message: 'Logged out successfully'
+    });
+
+  } catch (error) {
+    console.error('Logout error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
+// Logout from all devices endpoint
+router.post('/logout-all', async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+
+    if (!refreshToken) {
+      return res.status(400).json({
+        success: false,
+        message: 'Refresh token is required'
+      });
+    }
+
+    // Hash the refresh token to find the user
+    const refreshTokenHash = crypto.createHash('sha256').update(refreshToken).digest('hex');
+    
+    // First find the user ID from the session
+    const sessionQuery = `
+      SELECT user_id FROM user_sessions 
+      WHERE refresh_token_hash = $1 AND is_active = true
+    `;
+    const sessionResult = await pool.query(sessionQuery, [refreshTokenHash]);
+    
+    if (sessionResult.rows.length === 0) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid session'
+      });
+    }
+
+    const userId = sessionResult.rows[0].user_id;
+
+    // Deactivate all sessions for this user
+    await pool.query(
+      `UPDATE user_sessions SET 
+       is_active = false,
+       last_used_at = CURRENT_TIMESTAMP
+       WHERE user_id = $1 AND is_active = true`,
+      [userId]
+    );
+
+    res.json({
+      success: true,
+      message: 'Logged out from all devices successfully'
+    });
+
+  } catch (error) {
+    console.error('Logout all error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
+// Get active sessions endpoint
+router.get('/sessions', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authorization token required'
+      });
+    }
+
+    const token = authHeader.substring(7);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret') as any;
+    
+    // Get all active sessions for the user
+    const sessionsQuery = `
+      SELECT id, device_info, ip_address, user_agent, created_at, last_used_at, expires_at
+      FROM user_sessions 
+      WHERE user_id = $1 AND is_active = true AND expires_at > CURRENT_TIMESTAMP
+      ORDER BY last_used_at DESC
+    `;
+    
+    const sessionsResult = await pool.query(sessionsQuery, [decoded.userId]);
+    
+    res.json({
+      success: true,
+      data: {
+        sessions: sessionsResult.rows.map(session => ({
+          id: session.id,
+          deviceInfo: session.device_info,
+          ipAddress: session.ip_address,
+          userAgent: session.user_agent,
+          createdAt: session.created_at,
+          lastUsedAt: session.last_used_at,
+          expiresAt: session.expires_at,
+          isCurrent: session.id === decoded.sessionId
+        }))
+      }
+    });
+
+  } catch (error) {
+    console.error('Get sessions error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
+// Test endpoint to debug request parsing
+router.post('/test', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Test endpoint works',
+    body: req.body,
+    headers: req.headers,
+    contentType: req.headers['content-type']
+  });
+});
+
+// Simple Register endpoint - no sessions
+router.post('/register', async (req, res) => {
+  try {
+    const { email, password, firstName, lastName, phone, dateOfBirth } = req.body;
+
+    // Validate required fields
+    if (!email || !password || !firstName || !lastName) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email, password, first name, and last name are required'
+      });
+    }
+
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide a valid email address'
+      });
+    }
+
+    // Validate password strength
+    if (password.length < 8) {
+      return res.status(400).json({
+        success: false,
+        message: 'Password must be at least 8 characters long'
+      });
+    }
+
+    // Check if user already exists
+    const existingUser = await pool.query(
+      'SELECT id FROM users WHERE email = $1',
+      [email]
+    );
+
+    if (existingUser.rows.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message: 'User with this email already exists'
+      });
+    }
+
+    // Hash password
+    const saltRounds = 12;
+    const passwordHash = await bcrypt.hash(password, saltRounds);
+
+    // Start transaction
+    const client = await pool.connect();
+    
+    try {
+      await client.query('BEGIN');
+
+      // Insert user
+      const userResult = await client.query(
+        `INSERT INTO users (
+          email, phone, password_hash, first_name, last_name, date_of_birth,
+          email_verified, phone_verified, is_active, account_type
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        RETURNING id, email, phone, first_name, last_name, date_of_birth, created_at`,
+        [
+          email, 
+          phone || null, 
+          passwordHash, 
+          firstName, 
+          lastName, 
+          dateOfBirth || null,
+          false, 
+          false, 
+          true, 
+          'player'
+        ]
+      );
+
+      const user = userResult.rows[0];
+
+      // Insert user preferences
+      await client.query(
+        `INSERT INTO user_preferences (
+          user_id, skill_level, notification_settings, privacy_settings
+        ) VALUES ($1, $2, $3, $4)`,
+        [
+          user.id, 
+          'beginner',
+          JSON.stringify({
+            email: true,
+            push: true,
+            sms: false,
+            marketing: false
+          }),
+          JSON.stringify({
+            profileVisibility: 'public',
+            showEmail: false,
+            showPhone: false
+          })
+        ]
+      );
+
+      await client.query('COMMIT');
+
+      // Generate JWT token
+      const accessToken = jwt.sign(
+        { 
+          userId: user.id, 
+          email: user.email,
+          accountType: 'player'
+        },
+        secrets.JWT_SECRET,
+        { expiresIn: '24h' }
+      );
+
+      res.status(201).json({
+        success: true,
+        message: 'User registered successfully',
+        data: {
+          accessToken,
+          user: {
+            id: user.id,
+            email: user.email,
+            phone: user.phone,
+            firstName: user.first_name,
+            lastName: user.last_name,
+            dateOfBirth: user.date_of_birth,
+            emailVerified: false,
+            phoneVerified: false,
+            isActive: true,
+            isPremium: false,
+            accountType: 'player',
+            createdAt: user.created_at,
+            profile: {
+              skillLevel: 'beginner'
+            }
+          }
+        }
+      });
+
+    } catch (dbError) {
+      await client.query('ROLLBACK');
+      console.error('Database error:', dbError);
+      res.status(500).json({
+        success: false,
+        message: 'Database error during registration'
+      });
+    } finally {
+      client.release();
+    }
+
+  } catch (error) {
+    console.error('Registration error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
+// Forgot password endpoint
+router.post('/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email is required'
+      });
+    }
+
+    // Find user
+    const userResult = await pool.query(
+      'SELECT id, email, first_name FROM users WHERE email = $1 AND is_active = true',
+      [email]
+    );
+
+    // Always return success to prevent email enumeration
+    if (userResult.rows.length === 0) {
+      return res.json({
+        success: true,
+        message: 'If an account with that email exists, a password reset link has been sent'
+      });
+    }
+
+    const user = userResult.rows[0];
+
+    // Generate reset token
+    const resetToken = crypto.randomBytes(32).toString('hex');
+    const resetTokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
+    const resetExpires = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
+
+    // Save reset token
+    await pool.query(
+      `UPDATE users SET 
+       password_reset_token = $1, 
+       password_reset_expires = $2 
+       WHERE id = $3`,
+      [resetTokenHash, resetExpires, user.id]
+    );
+
+    // In production, send email here
+    console.log(`Password reset token for ${email}: ${resetToken}`);
+
+    res.json({
+      success: true,
+      message: 'If an account with that email exists, a password reset link has been sent',
+      // Remove this in production
+      debug: {
+        resetToken,
+        userId: user.id
+      }
+    });
+
+  } catch (error) {
+    console.error('Forgot password error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
+// Reset password endpoint
+router.post('/reset-password', async (req, res) => {
+  try {
+    const { token, newPassword } = req.body;
+
+    if (!token || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'Token and new password are required'
+      });
+    }
+
+    if (newPassword.length < 8) {
+      return res.status(400).json({
+        success: false,
+        message: 'Password must be at least 8 characters long'
+      });
+    }
+
+    // Hash the token to compare with database
+    const resetTokenHash = crypto.createHash('sha256').update(token).digest('hex');
+
+    // Find user with valid reset token
+    const userResult = await pool.query(
+      `SELECT id, email FROM users 
+       WHERE password_reset_token = $1 
+       AND password_reset_expires > CURRENT_TIMESTAMP 
+       AND is_active = true`,
+      [resetTokenHash]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid or expired reset token'
+      });
+    }
+
+    const user = userResult.rows[0];
+
+    // Hash new password
+    const saltRounds = 12;
+    const passwordHash = await bcrypt.hash(newPassword, saltRounds);
+
+    // Update password and clear reset token
+    await pool.query(
+      `UPDATE users SET 
+       password_hash = $1,
+       password_reset_token = NULL,
+       password_reset_expires = NULL,
+       password_changed_at = CURRENT_TIMESTAMP
+       WHERE id = $2`,
+      [passwordHash, user.id]
+    );
+
+    res.json({
+      success: true,
+      message: 'Password has been reset successfully'
+    });
+
+  } catch (error) {
+    console.error('Reset password error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
+// Verify email endpoint
+router.post('/verify-email', async (req, res) => {
+  try {
+    const { token } = req.body;
+
+    if (!token) {
+      return res.status(400).json({
+        success: false,
+        message: 'Verification token is required'
+      });
+    }
+
+    // Find user with valid verification token
+    const userResult = await pool.query(
+      `SELECT id, email FROM users 
+       WHERE email_verification_token = $1 
+       AND email_verification_expires > CURRENT_TIMESTAMP 
+       AND email_verified = false
+       AND is_active = true`,
+      [token]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid or expired verification token'
+      });
+    }
+
+    const user = userResult.rows[0];
+
+    // Mark email as verified
+    await pool.query(
+      `UPDATE users SET 
+       email_verified = true,
+       email_verification_token = NULL,
+       email_verification_expires = NULL
+       WHERE id = $1`,
+      [user.id]
+    );
+
+    res.json({
+      success: true,
+      message: 'Email verified successfully'
+    });
+
+  } catch (error) {
+    console.error('Verify email error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
+// Verify phone endpoint
+router.post('/verify-phone', async (req, res) => {
+  try {
+    const { code, phone } = req.body;
+
+    if (!code || !phone) {
+      return res.status(400).json({
+        success: false,
+        message: 'Verification code and phone number are required'
+      });
+    }
+
+    // Find user with matching phone and verification code
+    const userResult = await pool.query(
+      `SELECT id, phone FROM users 
+       WHERE phone = $1 
+       AND phone_verification_code = $2 
+       AND phone_verified = false
+       AND is_active = true`,
+      [phone, code]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid verification code or phone number'
+      });
+    }
+
+    const user = userResult.rows[0];
+
+    // Mark phone as verified
+    await pool.query(
+      `UPDATE users SET 
+       phone_verified = true,
+       phone_verification_code = NULL
+       WHERE id = $1`,
+      [user.id]
+    );
+
+    res.json({
+      success: true,
+      message: 'Phone number verified successfully'
+    });
+
+  } catch (error) {
+    console.error('Verify phone error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
+// Change password endpoint
+router.post('/change-password', async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authorization token required'
+      });
+    }
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'Current password and new password are required'
+      });
+    }
+
+    if (newPassword.length < 8) {
+      return res.status(400).json({
+        success: false,
+        message: 'New password must be at least 8 characters long'
+      });
+    }
+
+    const token = authHeader.substring(7);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret') as any;
+
+    // Get user current password
+    const userResult = await pool.query(
+      'SELECT id, password_hash FROM users WHERE id = $1 AND is_active = true',
+      [decoded.userId]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    const user = userResult.rows[0];
+
+    // Verify current password
+    const isValidPassword = await bcrypt.compare(currentPassword, user.password_hash);
+    if (!isValidPassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'Current password is incorrect'
+      });
+    }
+
+    // Hash new password
+    const saltRounds = 12;
+    const newPasswordHash = await bcrypt.hash(newPassword, saltRounds);
+
+    // Update password and invalidate all sessions
+    await pool.query(
+      `UPDATE users SET 
+       password_hash = $1,
+       password_changed_at = CURRENT_TIMESTAMP
+       WHERE id = $2`,
+      [newPasswordHash, user.id]
+    );
+
+    // Invalidate ALL active sessions for this user (security measure)
+    await pool.query(
+      `UPDATE user_sessions SET 
+       is_active = false,
+       last_used_at = CURRENT_TIMESTAMP
+       WHERE user_id = $1 AND is_active = true`,
+      [user.id]
+    );
+
+    // Create a new session for the current user (they just authenticated)
+    const clientInfo = getClientInfo(req);
+    const newSession = await createUserSession(user.id, clientInfo);
+
+    // Generate new JWT access token with new session
+    const newAccessToken = jwt.sign(
+      { 
+        userId: user.id, 
+        email: decoded.email,
+        accountType: decoded.accountType || 'player',
+        sessionId: newSession.sessionId
+      },
+      secrets.JWT_SECRET,
+      { expiresIn: '15m' }
+    );
+
+    res.json({
+      success: true,
+      message: 'Password changed successfully. All other sessions have been terminated.',
+      data: {
+        accessToken: newAccessToken,
+        refreshToken: newSession.refreshToken,
+        expiresAt: newSession.expiresAt,
+        note: 'You have been issued a new token. Please update your stored credentials.'
+      }
+    });
+
+  } catch (error) {
+    if (error instanceof Error && error.name === 'JsonWebTokenError') {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid token'
+      });
+    }
+
+    console.error('Change password error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
+// Get user profile endpoint
+router.get('/profile', async (req, res) => {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    
+    if (!token) {
+      return res.status(401).json({
+        success: false,
+        message: 'No token provided'
+      });
+    }
+
+    const decoded = jwt.verify(token, secrets.JWT_SECRET) as any;
+    
+    const userQuery = `
+      SELECT u.*, up.first_name, up.last_name, up.skill_level, up.bio, up.avatar_url, up.date_of_birth
+      FROM users u
+      LEFT JOIN user_preferences up ON u.id = up.user_id
+      WHERE u.id = $1 AND u.is_active = true
+    `;
+    
+    const userResult = await pool.query(userQuery, [decoded.userId]);
+    
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    const user = userResult.rows[0];
+
+    res.json({
+      success: true,
+      data: {
+        user: {
+          id: user.id,
+          email: user.email,
+          phone: user.phone,
+          email_verified: user.email_verified,
+          phone_verified: user.phone_verified,
+          first_name: user.first_name,
+          last_name: user.last_name,
+          skill_level: user.skill_level,
+          bio: user.bio,
+          avatar_url: user.avatar_url,
+          date_of_birth: user.date_of_birth,
+          created_at: user.created_at
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Profile error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
+export default router;
+
+
+20. File: src\routes\auth-new.ts
+================================================================================
+import express from 'express';
+import { AuthController } from '../controllers/AuthController';
+import { authenticateToken } from '../middleware/auth';
+
+const router = express.Router();
+const authController = new AuthController();
+
+// Public routes
+router.post('/login', (req, res) => authController.login(req, res));
+router.post('/register', (req, res) => authController.register(req, res));
+
+// Protected routes
+router.get('/profile', authenticateToken, (req, res) => authController.getProfile(req, res));
+
+// Add other routes as needed
+
+export default router;
+
+
+21. File: src\routes\v1\auth.routes.ts
+================================================================================
+import express from 'express';
+import { AuthController } from '../../controllers/AuthController';
+import { authenticateToken, authorizeRoles } from '../../middleware/auth.middleware';
+
+const router = express.Router();
+const authController = new AuthController();
+
+// Public routes
+router.post('/login', (req, res) => authController.login(req, res));
+router.post('/register', (req, res) => authController.register(req, res));
+router.post('/refresh', (req, res) => authController.refreshToken(req, res));
+router.post('/forgot-password', (req, res) => authController.forgotPassword(req, res));
+router.post('/reset-password', (req, res) => authController.resetPassword(req, res));
+router.post('/verify-email', (req, res) => authController.verifyEmail(req, res));
+router.post('/verify-phone', (req, res) => authController.verifyPhone(req, res));
+
+// Protected routes
+router.post('/logout', authenticateToken, (req, res) => authController.logout(req, res));
+router.post('/logout-all', authenticateToken, (req, res) => authController.logoutAll(req, res));
+router.post('/change-password', authenticateToken, (req, res) => authController.changePassword(req, res));
+router.get('/profile', authenticateToken, (req, res) => authController.getProfile(req, res));
+router.get('/sessions', authenticateToken, (req, res) => authController.getSessions(req, res));
+
+// Admin routes
+router.get('/admin/users', authenticateToken, authorizeRoles('admin'), (req, res) => {
+  // Admin functionality
+  res.json({ message: 'Admin users endpoint' });
+});
+
+export default router;
+
+
+22. File: src\services\AuthService.ts
+================================================================================
+import { IAuthRepository } from '../repositories/interfaces/auth/IAuthRepository';
+import { ISessionRepository } from '../repositories/interfaces/auth/ISessionRepository';
+import { ILoginAttemptRepository } from '../repositories/interfaces/auth/ILoginAttemptRepository';
+import { AuthRepository } from '../repositories/implementations/auth/AuthRepository';
+import { SessionRepository } from '../repositories/implementations/auth/SessionRepository';
+import { LoginAttemptRepository } from '../repositories/implementations/auth/LoginAttemptRepository';
+import { User } from '../entities/auth/User.entity';
+import { UserSession } from '../entities/auth/UserSession.entity';
+import { LoginDto, RegisterDto, UserResponseDto } from '../dto/auth';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
+import { secrets } from '../config/secrets';
+
+interface ClientInfo {
+  ip: string;
+  userAgent: string;
+  deviceInfo: {
+    browser: string;
+    platform: string | string[];
+    mobile: boolean;
+  };
+}
+
+export class AuthService {
+  private authRepository: IAuthRepository;
+  private sessionRepository: ISessionRepository;
+  private loginAttemptRepository: ILoginAttemptRepository;
+
+  constructor(
+    authRepository?: IAuthRepository,
+    sessionRepository?: ISessionRepository,
+    loginAttemptRepository?: ILoginAttemptRepository
+  ) {
+    this.authRepository = authRepository || new AuthRepository();
+    this.sessionRepository = sessionRepository || new SessionRepository();
+    this.loginAttemptRepository = loginAttemptRepository || new LoginAttemptRepository();
+  }
+
+  async login(loginData: LoginDto, clientInfo: ClientInfo) {
+    const { email, password } = loginData;
+
+    try {
+      // Check brute force protection
+      const recentFailedAttempts = await this.loginAttemptRepository.getRecentFailedAttempts(email, 15);
+      if (recentFailedAttempts >= 5) {
+        await this.logFailedAttempt(email, clientInfo, 'rate_limited');
+        throw new Error('Too many failed attempts. Please try again in 15 minutes.');
+      }
+
+      // Find user
+      const user = await this.authRepository.findUserByEmail(email);
+      if (!user) {
+        await this.logFailedAttempt(email, clientInfo, 'user_not_found');
+        throw new Error('Invalid email or password');
+      }
+
+      // Check if account is locked
+      const isLocked = await this.authRepository.isAccountLocked(user.id);
+      if (isLocked) {
+        await this.logFailedAttempt(email, clientInfo, 'account_locked');
+        throw new Error('Account is temporarily locked');
+      }
+
+      // Verify password
+      const isValidPassword = await bcrypt.compare(password, user.passwordHash);
+      if (!isValidPassword) {
+        await this.authRepository.incrementLoginAttempts(user.id);
+        await this.logFailedAttempt(email, clientInfo, 'invalid_password');
+        throw new Error('Invalid email or password');
+      }
+
+      // Create session
+      const session = await this.createUserSession(user.id, clientInfo);
+      
+      // Update user login info
+      await this.authRepository.updateLastLogin(user.id, clientInfo.ip);
+      
+      // Log successful login
+      await this.logSuccessfulAttempt(email, clientInfo);
+
+      // Generate access token
+      const accessToken = this.generateAccessToken(user, session.id);
+
+      return {
+        accessToken,
+        refreshToken: session.refreshToken,
+        expiresAt: session.expiresAt,
+        user: this.sanitizeUser(user)
+      };
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  async register(registerData: RegisterDto): Promise<{
+    accessToken: string;
+    user: UserResponseDto;
+  }> {
+    const { email, password, firstName, lastName, phone, dateOfBirth } = registerData;
+
+    try {
+      // Check if user already exists
+      const existingUser = await this.authRepository.checkEmailExists(email);
+      if (existingUser) {
+        throw new Error('User with this email already exists');
+      }
+
+      // Hash password
+      const passwordHash = await bcrypt.hash(password, 12);
+
+      // Create user
+      const newUser = await this.authRepository.createUser({
+        email,
+        phone,
+        passwordHash,
+        firstName,
+        lastName,
+        dateOfBirth,
+        accountType: 'player',
+        isActive: true,
+        emailVerified: false,
+        phoneVerified: false,
+        isPremium: false
+      });
+
+      // Generate access token
+      const accessToken = this.generateAccessToken(newUser, '');
+
+      return {
+        accessToken,
+        user: this.sanitizeUser(newUser)
+      };
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  async refreshToken(refreshToken: string, clientInfo: ClientInfo) {
+    try {
+      // Hash the refresh token
+      const refreshTokenHash = crypto.createHash('sha256').update(refreshToken).digest('hex');
+
+      // Find active session
+      const session = await this.sessionRepository.findSessionByRefreshToken(refreshTokenHash);
+      if (!session || !session.user.isActive) {
+        throw new Error('Invalid or expired refresh token');
+      }
+
+      // Update session last used
+      await this.sessionRepository.updateSessionLastUsed(session.id, clientInfo.ip, clientInfo.userAgent);
+
+      // Generate new access token
+      const accessToken = this.generateAccessToken(session.user, session.id);
+
+      return {
+        accessToken,
+        expiresIn: '15m'
+      };
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  async logout(refreshToken: string): Promise<void> {
+    try {
+      const refreshTokenHash = crypto.createHash('sha256').update(refreshToken).digest('hex');
+      const session = await this.sessionRepository.findSessionByRefreshToken(refreshTokenHash);
+      
+      if (session) {
+        await this.sessionRepository.deactivateSession(session.id);
+      }
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  async logoutAllDevices(refreshToken: string): Promise<void> {
+    try {
+      const refreshTokenHash = crypto.createHash('sha256').update(refreshToken).digest('hex');
+      const session = await this.sessionRepository.findSessionByRefreshToken(refreshTokenHash);
+      
+      if (session) {
+        await this.sessionRepository.deactivateAllUserSessions(session.userId);
+      }
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  async forgotPassword(email: string): Promise<{ resetToken: string }> {
+    try {
+      const user = await this.authRepository.findUserByEmail(email);
+      if (!user) {
+        // Always return success to prevent email enumeration
+        throw new Error('If an account with that email exists, a password reset link has been sent');
+      }
+
+      // Generate reset token
+      const resetToken = crypto.randomBytes(32).toString('hex');
+      const resetExpires = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
+
+      await this.authRepository.updatePasswordResetToken(user.id, resetToken, resetExpires);
+
+      return { resetToken };
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  async resetPassword(token: string, newPassword: string): Promise<void> {
+    try {
+      const user = await this.authRepository.findUserByResetToken(token);
+      if (!user || !user.passwordResetExpires || user.passwordResetExpires < new Date()) {
+        throw new Error('Invalid or expired reset token');
+      }
+
+      const passwordHash = await bcrypt.hash(newPassword, 12);
+      await this.authRepository.updateUserPassword(user.id, passwordHash);
+      await this.authRepository.clearPasswordResetToken(user.id);
+
+      // Invalidate all sessions for security
+      await this.sessionRepository.deactivateAllUserSessions(user.id);
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  async changePassword(userId: string, currentPassword: string, newPassword: string, clientInfo: ClientInfo) {
+    try {
+      const user = await this.authRepository.findUserById(userId);
+      if (!user) {
+        throw new Error('User not found');
+      }
+
+      // Verify current password
+      const isValidPassword = await bcrypt.compare(currentPassword, user.passwordHash);
+      if (!isValidPassword) {
+        throw new Error('Current password is incorrect');
+      }
+
+      // Hash new password
+      const newPasswordHash = await bcrypt.hash(newPassword, 12);
+      await this.authRepository.updateUserPassword(user.id, newPasswordHash);
+
+      // Invalidate all sessions except current one
+      await this.sessionRepository.deactivateAllUserSessions(user.id);
+      
+      // Create new session for current user
+      const newSession = await this.createUserSession(user.id, clientInfo);
+      const newAccessToken = this.generateAccessToken(user, newSession.id);
+
+      return {
+        accessToken: newAccessToken,
+        refreshToken: newSession.refreshToken,
+        expiresAt: newSession.expiresAt
+      };
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  async verifyEmail(token: string): Promise<void> {
+    try {
+      const user = await this.authRepository.verifyEmail(token);
+      if (!user) {
+        throw new Error('Invalid or expired verification token');
+      }
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  async verifyPhone(phone: string, code: string): Promise<void> {
+    try {
+      const user = await this.authRepository.verifyPhone(phone, code);
+      if (!user) {
+        throw new Error('Invalid verification code or phone number');
+      }
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  async getUserProfile(userId: string): Promise<UserResponseDto> {
+    try {
+      const user = await this.authRepository.findUserById(userId);
+      if (!user) {
+        throw new Error('User not found');
+      }
+      return this.sanitizeUser(user);
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  async getUserSessions(userId: string): Promise<UserSession[]> {
+    try {
+      return await this.sessionRepository.findActiveUserSessions(userId);
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  // Private helper methods
+  private async createUserSession(userId: string, clientInfo: ClientInfo): Promise<{
+    id: string;
+    refreshToken: string;
+    expiresAt: Date;
+  }> {
+    const refreshToken = crypto.randomBytes(32).toString('hex');
+    const refreshTokenHash = crypto.createHash('sha256').update(refreshToken).digest('hex');
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+
+    const session = await this.sessionRepository.createSession({
+      userId,
+      refreshTokenHash,
+      deviceInfo: clientInfo.deviceInfo,
+      ipAddress: clientInfo.ip,
+      userAgent: clientInfo.userAgent,
+      expiresAt
+    });
+
+    return {
+      id: session.id,
+      refreshToken,
+      expiresAt: session.expiresAt
+    };
+  }
+
+  private generateAccessToken(user: User, sessionId: string): string {
+    return jwt.sign(
+      { 
+        userId: user.id, 
+        email: user.email,
+        accountType: user.accountType,
+        sessionId
+      },
+      secrets.JWT_SECRET,
+      { expiresIn: '15m' }
+    );
+  }
+
+  private sanitizeUser(user: User): UserResponseDto {
+    return {
+      id: user.id,
+      email: user.email,
+      phone: user.phone,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      dateOfBirth: user.dateOfBirth,
+      emailVerified: user.emailVerified,
+      phoneVerified: user.phoneVerified,
+      isActive: user.isActive,
+      isPremium: user.isPremium,
+      accountType: user.accountType,
+      lastLogin: user.lastLogin,
+      createdAt: user.createdAt
+    };
+  }
+
+  private async logFailedAttempt(email: string, clientInfo: ClientInfo, reason: string): Promise<void> {
+    await this.loginAttemptRepository.logLoginAttempt({
+      email,
+      ipAddress: clientInfo.ip,
+      userAgent: clientInfo.userAgent,
+      success: false,
+      failureReason: reason
+    });
+  }
+
+  private async logSuccessfulAttempt(email: string, clientInfo: ClientInfo): Promise<void> {
+    await this.loginAttemptRepository.logLoginAttempt({
+      email,
+      ipAddress: clientInfo.ip,
+      userAgent: clientInfo.userAgent,
+      success: true
+    });
+  }
+}
+

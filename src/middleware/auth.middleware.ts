@@ -1,10 +1,14 @@
-// src/middleware/auth.ts
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { secrets } from '../config/secrets';
 
 interface AuthenticatedRequest extends Request {
-  user?: any;
+  user?: {
+    userId: string;
+    email: string;
+    accountType: string;
+    sessionId: string;
+  };
 }
 
 export const authenticateToken = (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
@@ -18,7 +22,7 @@ export const authenticateToken = (req: AuthenticatedRequest, res: Response, next
     });
   }
 
-  jwt.verify(token, secrets.JWT_SECRET, (err: any, user: any) => {
+  jwt.verify(token, secrets.JWT_SECRET, (err: any, decoded: any) => {
     if (err) {
       return res.status(403).json({
         success: false,
@@ -26,7 +30,27 @@ export const authenticateToken = (req: AuthenticatedRequest, res: Response, next
       });
     }
     
-    req.user = user;
+    req.user = decoded;
     next();
   });
+};
+
+export const authorizeRoles = (...roles: string[]) => {
+  return (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    if (!req.user) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authentication required'
+      });
+    }
+
+    if (!roles.includes(req.user.accountType)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Insufficient permissions'
+      });
+    }
+
+    next();
+  };
 };
