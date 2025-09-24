@@ -1,0 +1,44 @@
+name: billiards-backend
+services:
+- name: api
+  source_dir: /
+  github:
+    repo: NareshCreations/BilliardsBackend
+    branch: main
+  run_command: npm run migrate && npm start
+  environment_slug: node-js
+  instance_count: 1
+  instance_size_slug: basic-xxs
+  http_port: 3001
+  envs:
+  - key: NODE_ENV
+    value: production
+  - key: PORT
+    value: "3001"
+  - key: DATABASE_URL
+    value: ${db.DATABASE_URL}
+  - key: JWT_SECRET
+    value: ${JWT_SECRET}
+  - key: DB_HOST
+    value: ${db.HOST}
+  - key: DB_PORT
+    value: ${db.PORT}
+  - key: DB_NAME
+    value: ${db.DATABASE}
+  - key: DB_USER
+    value: ${db.USER}
+  - key: DB_PASSWORD
+    value: ${db.PASSWORD}
+  - key: REDIS_URL
+    value: ${redis.REDIS_URL}
+
+databases:
+- name: db
+  engine: PG
+  version: "15"
+  size: db-s-1vcpu-1gb
+
+- name: redis
+  engine: REDIS
+  version: "7"
+  size: db-s-1vcpu-1gb
