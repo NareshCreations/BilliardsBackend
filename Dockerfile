@@ -4,13 +4,8 @@ FROM node:18-alpine
 # Set working directory
 WORKDIR /app
 
-# Install Doppler CLI - download pre-built binary
-RUN apk add --no-cache curl && \
-    curl -Ls https://cli.doppler.com/download?os=linux&arch=amd64 -o doppler && \
-    chmod +x doppler && \
-    mv doppler /usr/local/bin/doppler
-# Verify Doppler installation
-RUN doppler --version
+# Note: Doppler CLI installation skipped for Render deployment
+# JWT_SECRET will be provided via environment variables
 
 # Copy package files
 COPY package*.json ./
@@ -30,5 +25,5 @@ RUN npm prune --production
 # Expose port
 EXPOSE 3000
 
-# Start the application with Doppler
-CMD ["sh", "-c", "doppler run -- npm run migrate && doppler run -- npm start"]
+# Start the application
+CMD ["sh", "-c", "npm run migrate && npm start"]

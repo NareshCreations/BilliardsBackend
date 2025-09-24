@@ -4,10 +4,10 @@ services:
     env: node
     plan: free
     buildCommand: npm install && npm run build
-    startCommand: doppler run -- npm run migrate && doppler run -- npm start
+    startCommand: npm run migrate && npm start
     envVars:
-      - key: DOPPLER_TOKEN
-        value: ${DOPPLER_TOKEN}
+      - key: JWT_SECRET
+        value: ${JWT_SECRET}
       - key: NODE_ENV
         value: production
       - key: PORT
