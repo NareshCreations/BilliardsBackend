@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: billiards-backend
+    name: billiards-backend-doppler
     env: node
     plan: free
     buildCommand: |
@@ -8,7 +8,9 @@ services:
       curl -Ls https://cli.doppler.com/install.sh | sh
       # Install dependencies and build
       npm install && npm run build
-    startCommand: doppler run -- npm run migrate && doppler run -- npm start
+    startCommand: |
+      # Run with Doppler
+      doppler run -- npm run migrate && doppler run -- npm start
     envVars:
       - key: DOPPLER_TOKEN
         value: ${DOPPLER_TOKEN}
@@ -20,26 +22,6 @@ services:
         fromDatabase:
           name: billiards-db
           property: connectionString
-      - key: DB_HOST
-        fromDatabase:
-          name: billiards-db
-          property: host
-      - key: DB_PORT
-        fromDatabase:
-          name: billiards-db
-          property: port
-      - key: DB_NAME
-        fromDatabase:
-          name: billiards-db
-          property: database
-      - key: DB_USER
-        fromDatabase:
-          name: billiards-db
-          property: user
-      - key: DB_PASSWORD
-        fromDatabase:
-          name: billiards-db
-          property: password
       - key: REDIS_URL
         fromDatabase:
           name: redis-db
