@@ -3,15 +3,11 @@ services:
     name: billiards-backend
     env: node
     plan: free
-    buildCommand: |
-      # Install Doppler CLI
-      curl -Ls https://cli.doppler.com/install.sh | sh
-      # Install dependencies and build
-      npm install && npm run build
-    startCommand: doppler run -- npm run migrate && doppler run -- npm start
+    buildCommand: npm install && npm run build
+    startCommand: npm run migrate && npm start
     envVars:
-      - key: DOPPLER_TOKEN
-        value: ${DOPPLER_TOKEN}
+      - key: JWT_SECRET
+        value: ${JWT_SECRET}
       - key: NODE_ENV
         value: production
       - key: PORT
