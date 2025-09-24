@@ -4,9 +4,11 @@ FROM node:18-alpine
 # Set working directory
 WORKDIR /app
 
-# Install Doppler CLI
-RUN curl -Ls https://cli.doppler.com/install.sh | sh
-ENV PATH="/root/.local/bin:$PATH"
+# Install Doppler CLI using Alpine package manager
+RUN apk add --no-cache curl && \
+    curl -Ls https://cli.doppler.com/install.sh | sh && \
+    mv /root/.local/bin/doppler /usr/local/bin/doppler && \
+    chmod +x /usr/local/bin/doppler
 # Verify Doppler installation
 RUN doppler --version
 
