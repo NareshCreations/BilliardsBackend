@@ -36,14 +36,18 @@ const loadSecrets = (): SecretConfig => {
   // In development, we use .env file
   
   const requiredSecrets = [
-    'DB_HOST', 'DB_PORT', 'DB_NAME', 'DB_USER', 'DB_PASSWORD',
-    'DATABASE_URL', 'JWT_SECRET', 'REDIS_URL', 'NODE_ENV', 'PORT'
+    'DATABASE_URL', 'JWT_SECRET', 'NODE_ENV', 'PORT'
+  ];
+  
+  const optionalSecrets = [
+    'DB_HOST', 'DB_PORT', 'DB_NAME', 'DB_USER', 'DB_PASSWORD', 'REDIS_URL'
   ];
   
   const missingSecrets: string[] = [];
   
   const secrets: Partial<SecretConfig> = {};
   
+  // Check required secrets
   for (const secret of requiredSecrets) {
     const value = process.env[secret];
     if (!value) {
@@ -52,6 +56,22 @@ const loadSecrets = (): SecretConfig => {
       secrets[secret as keyof SecretConfig] = value;
     }
   }
+  
+  // Load optional secrets (with defaults)
+  for (const secret of optionalSecrets) {
+    const value = process.env[secret];
+    if (value) {
+      secrets[secret as keyof SecretConfig] = value;
+    }
+  }
+  
+  // Set defaults for optional secrets
+  if (!secrets.DB_HOST) secrets.DB_HOST = 'localhost';
+  if (!secrets.DB_PORT) secrets.DB_PORT = '5432';
+  if (!secrets.DB_NAME) secrets.DB_NAME = 'billiards_platform';
+  if (!secrets.DB_USER) secrets.DB_USER = 'postgres';
+  if (!secrets.DB_PASSWORD) secrets.DB_PASSWORD = 'password123';
+  if (!secrets.REDIS_URL) secrets.REDIS_URL = 'redis://localhost:6379';
   
   if (missingSecrets.length > 0) {
     throw new Error(`Missing required secrets: ${missingSecrets.join(', ')}`);

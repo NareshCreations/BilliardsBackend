@@ -2,9 +2,19 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import authRoutes from './routes/auth';
+import { secrets, logSecretStatus } from './config/secrets';
 
 // Load environment variables
 dotenv.config();
+
+// Log secret status on startup
+try {
+  logSecretStatus();
+  console.log('✅ Secrets loaded successfully');
+} catch (error) {
+  console.error('❌ Secret loading failed:', error);
+  process.exit(1);
+}
 
 const app = express();
 
